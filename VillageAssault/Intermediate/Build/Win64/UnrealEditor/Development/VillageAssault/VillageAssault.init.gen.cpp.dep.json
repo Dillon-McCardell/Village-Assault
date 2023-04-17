@@ -1,0 +1,13 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "c:\\users\\dillo\\repos\\village-assault\\villageassault\\intermediate\\build\\win64\\unrealeditor\\inc\\villageassault\\uht\\villageassault.init.gen.cpp",
+        "ProvidedModule": "",
+        "PCH": "c:\\users\\dillo\\repos\\village-assault\\villageassault\\intermediate\\build\\win64\\villageassaulteditor\\development\\engine\\sharedpch.engine.shadowerrors.h.pch",
+        "Includes": [
+            "c:\\users\\dillo\\repos\\village-assault\\villageassault\\intermediate\\build\\win64\\unrealeditor\\development\\villageassault\\definitions.villageassault.h"
+        ],
+        "ImportedModules": [],
+        "ImportedHeaderUnits": []
+    }
+}

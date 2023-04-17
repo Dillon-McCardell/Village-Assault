@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"changelists": [
+		{
+			"guid": "00000000000000000000000000000000",
+			"description": "Default Uncontrolled Changelist",
+			"files": [
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/BattleMap.umap",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/SunnyLandAssets/environment/layers/tileset_grass.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/BP_GrassMiddle.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/SunnyLandAssets/environment/layers/tileset_TileSet1.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/SunnyLandAssets/environment/layers/tileset_TileSet2.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/SunnyLandAssets/environment/layers/tileset_grassRight.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/Blueprints/BP_GrassMiddle.uasset",
+				"C:/Users/dillo/Repos/Village-Assault/VillageAssault/Content/Blueprints/BP_GrassRight.uasset"
+			]
+		}
+	]
+}
