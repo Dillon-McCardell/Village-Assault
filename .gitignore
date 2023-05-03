@@ -6,3 +6,5 @@ Saved/
 DerivedDataCache/
 Binaries/
 .vs/
+*.suo
+*.sdf
