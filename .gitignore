@@ -1,5 +1,4 @@
 # Ignore these files for now until I am willing to pay $5 a month for git LFS
 *.db
 *.ipch 
-*.ShadowErrors.h.pch 
-UE5.vcxproj
+*.log
