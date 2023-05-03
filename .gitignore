@@ -8,3 +8,4 @@ Binaries/
 .vs/
 *.suo
 *.sdf
+.vsconfig
