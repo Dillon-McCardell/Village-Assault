@@ -17,13 +17,13 @@ void EmptyLinkFunctionForGeneratedCodeVillageAssault_init() {}
 				nullptr,
 				0,
 				PKG_CompiledIn | 0x00000000,
-				0x480D5D07,
-				0x95960D12,
+				0x0D2CD9E3,
+				0x55CEE8EA,
 				METADATA_PARAMS(nullptr, 0)
 			};
 			UECodeGen_Private::ConstructUPackage(Z_Registration_Info_UPackage__Script_VillageAssault.OuterSingleton, PackageParams);
 		}
 		return Z_Registration_Info_UPackage__Script_VillageAssault.OuterSingleton;
 	}
-	static FRegisterCompiledInInfo Z_CompiledInDeferPackage_UPackage__Script_VillageAssault(Z_Construct_UPackage__Script_VillageAssault, TEXT("/Script/VillageAssault"), Z_Registration_Info_UPackage__Script_VillageAssault, CONSTRUCT_RELOAD_VERSION_INFO(FPackageReloadVersionInfo, 0x480D5D07, 0x95960D12));
+	static FRegisterCompiledInInfo Z_CompiledInDeferPackage_UPackage__Script_VillageAssault(Z_Construct_UPackage__Script_VillageAssault, TEXT("/Script/VillageAssault"), Z_Registration_Info_UPackage__Script_VillageAssault, CONSTRUCT_RELOAD_VERSION_INFO(FPackageReloadVersionInfo, 0x0D2CD9E3, 0x55CEE8EA));
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

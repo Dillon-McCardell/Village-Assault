@@ -2,12 +2,12 @@
 	"Targets": [
 		{
 			"Name": "VillageAssault",
-			"Path": "C:\\Users\\dillo\\Repos\\Village-Assault\\VillageAssault\\Source\\VillageAssault.Target.cs",
+			"Path": "C:\\Users\\4110096\\Documents\\GitHub\\VillageAssaultRepo\\Village-Assault\\VillageAssault\\Source\\VillageAssault.Target.cs",
 			"Type": "Game"
 		},
 		{
 			"Name": "VillageAssaultEditor",
-			"Path": "C:\\Users\\dillo\\Repos\\Village-Assault\\VillageAssault\\Source\\VillageAssaultEditor.Target.cs",
+			"Path": "C:\\Users\\4110096\\Documents\\GitHub\\VillageAssaultRepo\\Village-Assault\\VillageAssault\\Source\\VillageAssaultEditor.Target.cs",
 			"Type": "Editor"
 		}
 	]
