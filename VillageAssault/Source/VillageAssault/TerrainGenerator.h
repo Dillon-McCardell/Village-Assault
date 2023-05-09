@@ -32,6 +32,8 @@ public:
 		TSubclassOf<AActor> GrassMiddle;
 	UPROPERTY(EditDefaultsOnly, Category = "Assets")
 		TSubclassOf<AActor> Dirt;
+	UPROPERTY(EditDefaultsOnly, Category = "Assets")
+		TSubclassOf<AActor> Air;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Map")
 		int MapHeight;
