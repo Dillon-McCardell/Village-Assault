@@ -29,12 +29,12 @@ void ATerrainGenerator::Tick(float DeltaTime)
 
 void ATerrainGenerator::GenerateTerrain()
 {
-	int TileSize = 16;
-	int SpawnPadWidth = 5;
+	int TileSize = 32;
+	int SpawnPadWidth = 3;
 	int SpawnPadHeight = FMath::RandRange(5,MapHeight-10);
 	int TileZLocation = 0;
 	TArray<int> GrassZLocationArray;
-	//Spawn left base
+	//Spawn left base pad
 	for (int i = 0; i < SpawnPadWidth; i++) {
 		FVector Location(i*TileSize, 30.0f, SpawnPadHeight*TileSize);
 		GetWorld()->SpawnActor<AActor>(GrassMiddle, Location, FRotator::ZeroRotator);
@@ -43,6 +43,10 @@ void ATerrainGenerator::GenerateTerrain()
 			GetWorld()->SpawnActor<AActor>(Dirt, Location, FRotator::ZeroRotator);
 		}
 	}
+	//Spawn left base
+	FVector LeftBaseLocation(-20.0f, 30.0f, (SpawnPadHeight + 3.75) * TileSize);
+	GetWorld()->SpawnActor<AActor>(PlayerBase, LeftBaseLocation, FRotator::ZeroRotator);
+
 	//First generate the grass layer
 	FVector PrevSpawnLocation((SpawnPadWidth-1)*TileSize, 30, SpawnPadHeight*TileSize);
 	for (int i = 0; i < MapWidth-(SpawnPadWidth*2); i++) {
@@ -51,11 +55,11 @@ void ATerrainGenerator::GenerateTerrain()
 			TileHeightJump = FMath::RandRange(1, Topography);
 		}
 		int TileHeightChange = FMath::RandRange(-1, 1) * TileHeightJump;
-		if ((PrevSpawnLocation.Z / TileSize) + TileHeightChange > MapHeight-10) {
-			TileZLocation = (MapHeight-10) * TileSize;
+		if ((PrevSpawnLocation.Z / TileSize) + TileHeightChange > MapHeight-4) {
+			TileZLocation = (MapHeight-4) * TileSize;
 		}
-		else if ((PrevSpawnLocation.Z / TileSize) + TileHeightChange < 5) {
-			TileZLocation = 5 * TileSize;
+		else if ((PrevSpawnLocation.Z / TileSize) + TileHeightChange < 3) {
+			TileZLocation = 3 * TileSize;
 		}
 		else {
 			TileZLocation = PrevSpawnLocation.Z + TileHeightChange * TileSize;
@@ -80,16 +84,9 @@ void ATerrainGenerator::GenerateTerrain()
 			GetWorld()->SpawnActor<AActor>(Air, Location, FRotator::ZeroRotator);
 		}
 	}
-	//Fill space above left spawn platform with Air tiles
-	for (int i = 0; i < SpawnPadWidth; i++) {
-		for (int z = 1; z < MapHeight - SpawnPadHeight; z++) {
-			FVector Location((TileSize * i), 30.0f, SpawnPadHeight*TileSize + (z * TileSize));
-			GetWorld()->SpawnActor<AActor>(Air, Location, FRotator::ZeroRotator);
-		}
-	}
 	
-	//Spawn right base
-	int RightSpawnPadHeight = FMath::RandRange((PrevSpawnLocation.Z/16) - 1, (PrevSpawnLocation.Z/16) + 1);
+	//Spawn right base platform
+	int RightSpawnPadHeight = FMath::RandRange((PrevSpawnLocation.Z/TileSize) - 1, (PrevSpawnLocation.Z/TileSize) + 1);
 	for (int i = 0; i < SpawnPadWidth; i++) {
 		FVector Location(PrevSpawnLocation.X+(i*TileSize)+TileSize, 30.0f, RightSpawnPadHeight*TileSize);
 		GetWorld()->SpawnActor<AActor>(GrassMiddle, Location, FRotator::ZeroRotator);
@@ -98,20 +95,17 @@ void ATerrainGenerator::GenerateTerrain()
 			GetWorld()->SpawnActor<AActor>(Dirt, Location, FRotator::ZeroRotator);
 		}
 	}
-	//Fill space above right spawn platform with Air tiles
-	for (int i = 0; i < SpawnPadWidth; i++) {
-		for (int z = 1; z < MapHeight - RightSpawnPadHeight; z++) {
-			FVector Location(PrevSpawnLocation.X + (i * TileSize) + TileSize, 30.0f, RightSpawnPadHeight * TileSize + (z * TileSize));
-			GetWorld()->SpawnActor<AActor>(Air, Location, FRotator::ZeroRotator);
-		}
-	}
+	//Spawn right base
+	FVector RightBaseLocation(PrevSpawnLocation.X+12, 30.0f, (RightSpawnPadHeight + 3.75) * TileSize);
+	GetWorld()->SpawnActor<AActor>(PlayerBase, RightBaseLocation, FRotator::ZeroRotator);
 }
 
 void ATerrainGenerator::GenerateMapOutline() {
+	int TileSize = 32;
 	for (int i = 0; i < MapWidth; i++) {
-		FVector Location(i * 16, 30.0f, MapHeight * 16);
+		FVector Location(i * TileSize, 30.0f, MapHeight * TileSize);
 		GetWorld()->SpawnActor<AActor>(Dirt, Location, FRotator::ZeroRotator);
-		Location = FVector(i * 16, 30.0f, 0.0f);
+		Location = FVector(i * TileSize, 30.0f, 0.0f);
 		GetWorld()->SpawnActor<AActor>(Dirt, Location, FRotator::ZeroRotator);
 
 	}
