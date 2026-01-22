@@ -1,0 +1,148 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/boot_menu.gd" id="1"]
+
+[node name="BootMenu" type="Control"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1")
+
+[node name="StatusLabel" type="Label" parent="."]
+text = "Status: Idle"
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 300.0
+offset_bottom = 40.0
+
+[node name="MainPanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="MainVBox" type="VBoxContainer" parent="MainPanel"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -120.0
+offset_top = -80.0
+offset_right = 120.0
+offset_bottom = 80.0
+
+[node name="Title" type="Label" parent="MainPanel/MainVBox"]
+text = "Village Assault"
+horizontal_alignment = 1
+
+[node name="HostButton" type="Button" parent="MainPanel/MainVBox"]
+text = "Host"
+
+[node name="JoinButton" type="Button" parent="MainPanel/MainVBox"]
+text = "Join"
+
+[node name="SettingsButton" type="Button" parent="MainPanel/MainVBox"]
+text = "Settings"
+
+[node name="HostPanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+visible = false
+
+[node name="HostVBox" type="VBoxContainer" parent="HostPanel"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -140.0
+offset_top = -120.0
+offset_right = 140.0
+offset_bottom = 120.0
+
+[node name="HostLabel" type="Label" parent="HostPanel/HostVBox"]
+text = "Host Game"
+horizontal_alignment = 1
+
+[node name="MapSizeLabel" type="Label" parent="HostPanel/HostVBox"]
+text = "Map Size"
+horizontal_alignment = 1
+
+[node name="MapSizeSlider" type="HSlider" parent="HostPanel/HostVBox"]
+min_value = 0.0
+max_value = 1.0
+step = 0.1
+value = 0.0
+
+[node name="MapSizeValue" type="Label" parent="HostPanel/HostVBox"]
+text = "Size: 64 x 20 (100%)"
+horizontal_alignment = 1
+
+[node name="HostStartButton" type="Button" parent="HostPanel/HostVBox"]
+text = "Start Hosting"
+
+[node name="HostBackButton" type="Button" parent="HostPanel/HostVBox"]
+text = "Back"
+
+[node name="JoinPanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+visible = false
+
+[node name="JoinVBox" type="VBoxContainer" parent="JoinPanel"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -160.0
+offset_top = -80.0
+offset_right = 160.0
+offset_bottom = 80.0
+
+[node name="JoinLabel" type="Label" parent="JoinPanel/JoinVBox"]
+text = "Join Game"
+horizontal_alignment = 1
+
+[node name="JoinAddressInput" type="LineEdit" parent="JoinPanel/JoinVBox"]
+text = "127.0.0.1"
+placeholder_text = "Host IP"
+
+[node name="JoinStartButton" type="Button" parent="JoinPanel/JoinVBox"]
+text = "Connect"
+
+[node name="JoinBackButton" type="Button" parent="JoinPanel/JoinVBox"]
+text = "Back"
+
+[node name="SettingsPanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+visible = false
+
+[node name="SettingsVBox" type="VBoxContainer" parent="SettingsPanel"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -160.0
+offset_top = -80.0
+offset_right = 160.0
+offset_bottom = 80.0
+
+[node name="SettingsLabel" type="Label" parent="SettingsPanel/SettingsVBox"]
+text = "Settings"
+horizontal_alignment = 1
+
+[node name="SettingsHint" type="Label" parent="SettingsPanel/SettingsVBox"]
+text = "(Template)"
+horizontal_alignment = 1
+
+[node name="SettingsBackButton" type="Button" parent="SettingsPanel/SettingsVBox"]
+text = "Back"
+
+[connection signal="pressed" from="MainPanel/MainVBox/HostButton" to="." method="_on_main_host_pressed"]
+[connection signal="pressed" from="MainPanel/MainVBox/JoinButton" to="." method="_on_main_join_pressed"]
+[connection signal="pressed" from="MainPanel/MainVBox/SettingsButton" to="." method="_on_main_settings_pressed"]
+
+[connection signal="pressed" from="HostPanel/HostVBox/HostStartButton" to="." method="_on_host_pressed"]
+[connection signal="pressed" from="HostPanel/HostVBox/HostBackButton" to="." method="_on_back_pressed"]
+
+[connection signal="pressed" from="JoinPanel/JoinVBox/JoinStartButton" to="." method="_on_join_pressed"]
+[connection signal="pressed" from="JoinPanel/JoinVBox/JoinBackButton" to="." method="_on_back_pressed"]
+
+[connection signal="pressed" from="SettingsPanel/SettingsVBox/SettingsBackButton" to="." method="_on_back_pressed"]

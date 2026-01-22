@@ -1,11 +1,22 @@
-*.log
-*.vsidx
-*.cache
-Intermediate/
-Saved/
-DerivedDataCache/
-Binaries/
-.vs/
-*.suo
-*.sdf
-.vsconfig
+# Godot 4+ editor metadata
+.godot/
+
+# Mono/.NET builds (keep ignored even if not using C#)
+.mono/
+
+# Exported builds
+export/
+exports/
+
+# Imported assets cache (Godot 3 compatibility)
+.import/
+
+# Editor backups
+*~
+*.bak
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

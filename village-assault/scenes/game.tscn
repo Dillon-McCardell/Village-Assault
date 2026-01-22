@@ -1,0 +1,38 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/game.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/world/territory_manager.gd" id="2"]
+
+[node name="Game" type="Node2D"]
+script = ExtResource("1")
+
+[node name="TerritoryManager" type="Node2D" parent="."]
+script = ExtResource("2")
+
+[node name="WorldTileMap" type="TileMap" parent="TerritoryManager"]
+z_index = -1
+
+[node name="Camera2D" type="Camera2D" parent="."]
+current = true
+
+[node name="Units" type="Node2D" parent="."]
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="UI" type="Control" parent="CanvasLayer"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="SpawnButton" type="Button" parent="CanvasLayer/UI"]
+text = "Spawn Test Unit"
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 200.0
+offset_bottom = 48.0
+
+[node name="StatusLabel" type="Label" parent="CanvasLayer/UI"]
+text = "Status: Offline"
+offset_left = 16.0
+offset_top = 56.0
+offset_right = 260.0
+offset_bottom = 80.0

@@ -1,8 +1,18 @@
 # Village Assault
- A 2D mobile platformer PVP battle
 
-![image](https://github.com/Dillon-McCardell/Village-Assault/assets/110850681/23a31408-7314-4d51-996b-77d1d11b9bec)
+A 2D multiplayer side-on, block-based game built in Godot 4.
 
-### Configure the Terrain Generator
-Open the BP_TerrainGenerator that is a part of the Map. Ensure the assets are set like so:
-![image](https://github.com/Dillon-McCardell/Village-Assault/assets/110850681/da33c220-5132-4cfa-99b8-9ae0da9e9ac2)
+## Open the Project
+
+1. Open Godot 4.x.
+2. Import the project at `./village-assault/` (select the folder containing `project.godot`).
+3. Run the project (main scene is `res://scenes/game.tscn`).
+
+## Multiplayer Test (Host/Join)
+
+The minimal networking slice uses an autoloaded `NetworkManager`.
+
+- Host: In the Godot output console, run `NetworkManager.host()`.
+- Join: In another instance, run `NetworkManager.join("127.0.0.1")` (replace with host IP if needed).
+
+Once connected, press **Spawn Test Unit** to request a server-authoritative spawn that broadcasts to all peers.
