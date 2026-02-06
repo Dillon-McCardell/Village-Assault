@@ -12,6 +12,8 @@ func _ready() -> void:
 	spawn_button.pressed.connect(_on_spawn_pressed)
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
+	if camera.has_signal("zoom_changed"):
+		camera.zoom_changed.connect(_on_camera_zoom_changed)
 	_update_status()
 	_update_camera_limits()
 
@@ -42,6 +44,9 @@ func _on_world_settings_updated(_map_width: int, _map_height: int, _map_seed: in
 	_update_camera_limits()
 	_update_camera_anchor()
 
+func _on_camera_zoom_changed() -> void:
+	_update_camera_limits()
+
 func _update_camera_anchor() -> void:
 	if GameState.local_team == GameState.Team.NONE:
 		return
@@ -49,10 +54,26 @@ func _update_camera_anchor() -> void:
 
 func _update_camera_limits() -> void:
 	var world_rect := territory_manager.get_world_pixel_rect()
-	camera.limit_left = int(world_rect.position.x)
-	camera.limit_top = int(world_rect.position.y)
-	camera.limit_right = int(world_rect.position.x + world_rect.size.x)
-	camera.limit_bottom = int(world_rect.position.y + world_rect.size.y)
+	var viewport_size := get_viewport_rect().size
+	var half_view := (viewport_size * 0.5) / camera.zoom
+	var left_limit := world_rect.position.x + half_view.x
+	var right_limit := world_rect.position.x + world_rect.size.x - half_view.x
+	var top_limit := world_rect.position.y + half_view.y
+	var bottom_limit := world_rect.position.y + world_rect.size.y - half_view.y
+	if left_limit > right_limit:
+		var center_x := world_rect.position.x + world_rect.size.x * 0.5
+		left_limit = center_x
+		right_limit = center_x
+	if top_limit > bottom_limit:
+		var center_y := world_rect.position.y + world_rect.size.y * 0.5
+		top_limit = center_y
+		bottom_limit = center_y
+	camera.limit_left = -1000000
+	camera.limit_right = 1000000
+	camera.limit_top = -1000000
+	camera.limit_bottom = 1000000
+	if camera.has_method("set_world_rect"):
+		camera.set_world_rect(world_rect)
 
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
