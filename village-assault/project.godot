@@ -11,9 +11,9 @@ config_version=5
 [application]
 
 config/name="Village Assault"
+run/main_scene="res://scenes/boot_menu.tscn"
 config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="res://icon.svg"
-run/main_scene="res://scenes/boot_menu.tscn"
 
 [autoload]
 
