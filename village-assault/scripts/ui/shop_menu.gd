@@ -2,9 +2,24 @@ extends Control
 
 signal item_purchased(item_id: String, price: int)
 
-@export var button_size: Vector2 = Vector2(120, 32)
+@export var button_size: Vector2 = Vector2(140, 44)
 @export var spacing: Vector2 = Vector2(8, 8)
 @export var margin: Vector2 = Vector2(16, 16)
+
+const ITEM_SCRIPTS: Array = [
+	preload("res://scripts/shop/troops/troop_grunt.gd"),
+	preload("res://scripts/shop/troops/troop_ranger.gd"),
+	preload("res://scripts/shop/troops/troop_brute.gd"),
+	preload("res://scripts/shop/troops/troop_scout.gd"),
+	preload("res://scripts/shop/defense/defense_gate.gd"),
+	preload("res://scripts/shop/defense/defense_stairs.gd"),
+	preload("res://scripts/shop/defense/defense_tower.gd"),
+	preload("res://scripts/shop/defense/defense_wall.gd"),
+	preload("res://scripts/shop/turrets/turret_archer.gd"),
+	preload("res://scripts/shop/turrets/turret_ballista.gd"),
+	preload("res://scripts/shop/turrets/turret_cannon.gd"),
+	preload("res://scripts/shop/turrets/turret_laser.gd"),
+]
 
 var _origin_button: Button
 var _category_buttons: Array[Button] = []
@@ -32,39 +47,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			_collapse_all()
 
 func _build_shop_data() -> void:
-	_shop_data = [
-		{
-			"id": "troops",
-			"label": "Troops",
-			"items": [
-				{"id": "troop_grunt", "label": "Grunt", "price": 10},
-				{"id": "troop_ranger", "label": "Ranger", "price": 15},
-				{"id": "troop_brute", "label": "Brute", "price": 25},
-				{"id": "troop_scout", "label": "Scout", "price": 12},
-			]
-		},
-		{
-			"id": "defense",
-			"label": "Defense",
-			"items": [
-				{"id": "defense_ladder", "label": "Ladder", "price": 10},
-				{"id": "defense_wall", "label": "Wall", "price": 20},
-				{"id": "defense_gate", "label": "Gate", "price": 30},
-				{"id": "defense_trap", "label": "Trap", "price": 18},
-			]
-		},
-		{
-			"id": "turrets",
-			"label": "Turret",
-			"items": [
-				{"id": "turret_sniper", "label": "Sniper", "price": 35},
-				{"id": "turret_cannon", "label": "Cannon", "price": 22},
-				{"id": "turret_archer", "label": "Archer", "price": 45},
-				{"id": "turret_laser", "label": "Laser", "price": 95},
-				{"id": "turret_fusion", "label": "Fusion", "price": 155},
-			]
-		}
-	]
+	_shop_data.clear()
+	var categories: Dictionary = {}
+	for script in ITEM_SCRIPTS:
+		var item := (script as GDScript).new() as ShopItem
+		if item == null:
+			continue
+		if not categories.has(item.category):
+			categories[item.category] = []
+		categories[item.category].append(item)
+	for category_label in categories.keys():
+		var items: Array = categories[category_label]
+		_shop_data.append({
+			"id": category_label.to_lower(),
+			"label": category_label,
+			"items": items,
+		})
 
 func _build_buttons() -> void:
 	_origin_button = _make_button("Shop", _on_origin_pressed)
@@ -87,8 +85,8 @@ func _build_buttons() -> void:
 		var item_row: Array = []
 		var items: Array = category["items"]
 		for j in range(items.size()):
-			var item: Dictionary = items[j]
-			var label := "%s $%d" % [item["label"], item["price"]]
+			var item: ShopItem = items[j]
+			var label := item.get_display_label()
 			var item_button := _make_button(label, func() -> void:
 				_on_item_pressed(i, j)
 			)
@@ -134,10 +132,10 @@ func _on_category_pressed(index: int) -> void:
 
 func _on_item_pressed(category_index: int, item_index: int) -> void:
 	var item := _get_item(category_index, item_index)
-	if item.is_empty():
+	if item == null:
 		return
 	if multiplayer.is_server():
-		_process_purchase_request(multiplayer.get_unique_id(), category_index, item_index)
+		_process_purchase_request(multiplayer.get_unique_id(), item)
 	else:
 		_request_purchase.rpc_id(1, category_index, item_index)
 
@@ -184,13 +182,13 @@ func _make_button(label: String, pressed_callback: Callable) -> Button:
 	button.focus_mode = Control.FOCUS_NONE
 	return button
 
-func _get_item(category_index: int, item_index: int) -> Dictionary:
+func _get_item(category_index: int, item_index: int) -> ShopItem:
 	if category_index < 0 or category_index >= _shop_data.size():
-		return {}
+		return null
 	var category: Dictionary = _shop_data[category_index]
 	var items: Array = category["items"]
 	if item_index < 0 or item_index >= items.size():
-		return {}
+		return null
 	return items[item_index]
 
 @rpc("any_peer", "reliable")
@@ -200,16 +198,16 @@ func _request_purchase(category_index: int, item_index: int) -> void:
 	var peer_id := multiplayer.get_remote_sender_id()
 	if peer_id == 0:
 		peer_id = 1
-	_process_purchase_request(peer_id, category_index, item_index)
-
-func _process_purchase_request(peer_id: int, category_index: int, item_index: int) -> void:
 	var item := _get_item(category_index, item_index)
-	if item.is_empty():
+	if item == null:
 		return
-	var price: int = int(item["price"])
+	_process_purchase_request(peer_id, item)
+
+func _process_purchase_request(peer_id: int, item: ShopItem) -> void:
+	var price: int = item.price
 	var current_money := GameState.get_money_for_peer(peer_id)
 	if current_money < price:
 		return
 	GameState.set_money_for_peer(peer_id, current_money - price)
-	item_purchased.emit(item["id"], price)
+	item_purchased.emit(item.id, price)
 	# TODO: Spawn or queue the selected item here.
