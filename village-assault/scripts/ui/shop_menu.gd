@@ -95,7 +95,10 @@ func _build_buttons() -> void:
 		_item_buttons.append(item_row)
 
 func _layout_buttons() -> void:
-	var viewport_size := get_viewport_rect().size
+	var viewport_size := Vector2(
+		ProjectSettings.get_setting("display/window/size/viewport_width", 1152),
+		ProjectSettings.get_setting("display/window/size/viewport_height", 648)
+	)
 	var origin_pos := Vector2(margin.x, viewport_size.y - margin.y - button_size.y)
 	_origin_button.position = origin_pos
 	_origin_button.size = button_size
@@ -210,4 +213,7 @@ func _process_purchase_request(peer_id: int, item: ShopItem) -> void:
 		return
 	GameState.set_money_for_peer(peer_id, current_money - price)
 	item_purchased.emit(item.id, price)
-	# TODO: Spawn or queue the selected item here.
+	if item.category == "Troops":
+		var team := GameState.get_team_for_peer(peer_id)
+		DebugConsole.log_msg("Enqueuing spawn: peer=%d item=%s team=%d" % [peer_id, item.id, team])
+		GameState.enqueue_spawn({ "peer_id": peer_id, "item_id": item.id, "team": team })

@@ -5,8 +5,20 @@ extends Node2D
 @onready var status_label: Label = $CanvasLayer/UI/StatusLabel
 @onready var territory_manager: TerritoryManager = $TerritoryManager
 @onready var camera: Camera2D = $Camera2D
+@onready var debug_overlay: TextEdit = $DebugLayer/DebugOverlay
 
 var _test_unit_scene: PackedScene = preload("res://scenes/test_unit.tscn")
+
+const TROOP_CATEGORY: String = "Troops"
+var _troop_scenes: Dictionary = {
+	"troop_grunt":  preload("res://scenes/troops/troop_grunt.tscn"),
+	"troop_ranger": preload("res://scenes/troops/troop_ranger.tscn"),
+	"troop_brute":  preload("res://scenes/troops/troop_brute.tscn"),
+	"troop_scout":  preload("res://scenes/troops/troop_scout.tscn"),
+}
+
+func _physics_process(_delta: float) -> void:
+	_process_spawn_queue()
 
 func _ready() -> void:
 	spawn_button.pressed.connect(_on_spawn_pressed)
@@ -16,6 +28,8 @@ func _ready() -> void:
 		camera.zoom_changed.connect(_on_camera_zoom_changed)
 	_update_status()
 	_update_camera_limits()
+	DebugConsole.set_label(debug_overlay)
+	DebugConsole.log_msg("Game ready. is_server=%s" % str(multiplayer.is_server()))
 
 func _on_spawn_pressed() -> void:
 	if multiplayer.multiplayer_peer == null:
@@ -75,6 +89,39 @@ func _update_camera_limits() -> void:
 	if camera.has_method("set_world_rect"):
 		camera.set_world_rect(world_rect)
 
+func _process_spawn_queue() -> void:
+	if not multiplayer.is_server():
+		return
+	var request := GameState.dequeue_spawn()
+	if request.is_empty():
+		return
+	DebugConsole.log_msg("Processing spawn: %s" % str(request))
+	if request.get("team", GameState.Team.NONE) == GameState.Team.NONE:
+		DebugConsole.log_msg("DISCARD: team is NONE")
+		return
+	var team: int = request["team"]
+	var pos: Vector2 = territory_manager.get_next_spawn_position_for_team(team)
+	if not territory_manager.is_world_pos_in_team_territory(pos, team):
+		DebugConsole.log_msg("DISCARD: pos %s not in territory for team %d" % [str(pos), team])
+		return
+	var scene: PackedScene = _troop_scenes.get(request.get("item_id", ""))
+	if scene == null:
+		DebugConsole.log_msg("DISCARD: no scene for item_id '%s'" % request.get("item_id", ""))
+		return
+	DebugConsole.log_msg("Spawning %s at %s team %d" % [request["item_id"], str(pos), team])
+	spawn_unit.rpc(pos, team, request["item_id"])
+
+@rpc("authority", "reliable", "call_local")
+func spawn_unit(pos: Vector2, team: int, item_id: String) -> void:
+	var scene: PackedScene = _troop_scenes.get(item_id)
+	if scene == null:
+		return
+	var unit := scene.instantiate() as Node2D
+	unit.position = pos
+	if unit.has_method("set_team"):
+		unit.set_team(team)
+	units_root.add_child(unit)
+
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
 	if not multiplayer.is_server():
@@ -91,9 +138,10 @@ func request_spawn_test_unit() -> void:
 	spawn_test_unit.rpc(spawn_pos, team)
 
 @rpc("authority", "reliable", "call_local")
-func spawn_test_unit(position: Vector2, team: int) -> void:
+func spawn_test_unit(spawn_pos: Vector2, team: int) -> void:
 	var unit := _test_unit_scene.instantiate() as Node2D
-	unit.position = position
+	unit.position = spawn_pos
 	if unit.has_method("set_team"):
 		unit.set_team(team)
 	units_root.add_child(unit)
+	DebugConsole.log_msg("spawn_test_unit: pos=%s team=%d" % [str(unit.position), team])

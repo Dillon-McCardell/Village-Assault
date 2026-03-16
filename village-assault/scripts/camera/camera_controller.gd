@@ -87,7 +87,7 @@ func _add_action_if_missing(action_name: String, keys: Array) -> void:
 	InputMap.add_action(action_name)
 	for keycode in keys:
 		var ev := InputEventKey.new()
-		ev.keycode = int(keycode)
+		ev.keycode = keycode as Key
 		InputMap.action_add_event(action_name, ev)
 
 func _apply_zoom(factor: float) -> void:

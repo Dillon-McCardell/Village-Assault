@@ -73,10 +73,10 @@ func _assign_team_to_peer(peer_id: int) -> void:
 	else:
 		_receive_player_state.rpc_id(peer_id, team, STARTING_MONEY)
 
-func set_world_settings(width: int, height: int, seed: int) -> void:
+func set_world_settings(width: int, height: int, map_seed_val: int) -> void:
 	map_width = width
 	map_height = height
-	map_seed = seed
+	map_seed = map_seed_val
 	world_settings_updated.emit(map_width, map_height, map_seed)
 	if multiplayer.is_server():
 		_broadcast_world_settings()
@@ -147,10 +147,10 @@ func _send_world_settings_to_local() -> void:
 	_receive_world_settings(map_width, map_height, map_seed)
 
 @rpc("authority", "reliable")
-func _receive_world_settings(width: int, height: int, seed: int) -> void:
+func _receive_world_settings(width: int, height: int, map_seed_val: int) -> void:
 	map_width = width
 	map_height = height
-	map_seed = seed
+	map_seed = map_seed_val
 	world_settings_updated.emit(map_width, map_height, map_seed)
 
 func _generate_seed() -> int:

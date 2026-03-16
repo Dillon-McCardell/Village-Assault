@@ -24,8 +24,8 @@ func _ready() -> void:
 
 func _on_host_pressed() -> void:
 	var map_size := _get_map_size_from_slider()
-	var seed: int = _generate_seed()
-	GameState.set_world_settings(map_size.x, map_size.y, seed)
+	var map_seed_val: int = _generate_seed()
+	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
 	NetworkManager.host()
 	_set_status("Hosting...")
 	get_tree().change_scene_to_file(LOBBY_SCENE)
@@ -85,8 +85,8 @@ func _get_map_size_from_slider() -> Vector2i:
 	return Vector2i(width, height)
 
 func _update_map_size_label(value: float) -> void:
-	var size := _get_map_size_from_slider()
-	map_size_value.text = "Size: %d x %d (%.0f%%)" % [size.x, size.y, 100.0 + (value * 100.0)]
+	var map_size := _get_map_size_from_slider()
+	map_size_value.text = "Size: %d x %d (%.0f%%)" % [map_size.x, map_size.y, 100.0 + (value * 100.0)]
 
 func _generate_seed() -> int:
 	var rng := RandomNumberGenerator.new()

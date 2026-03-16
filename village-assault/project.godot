@@ -15,7 +15,19 @@ run/main_scene="res://scenes/boot_menu.tscn"
 config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="res://icon.svg"
 
+[display]
+
+window/size/viewport_width=1152
+window/size/viewport_height=648
+window/size/window_width_override=1152
+window/size/window_height_override=808
+
 [autoload]
 
 NetworkManager="*res://scripts/network/network_manager.gd"
 GameState="*res://scripts/game_state.gd"
+DebugConsole="*res://scripts/debug_console.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gdUnit4/plugin.cfg")

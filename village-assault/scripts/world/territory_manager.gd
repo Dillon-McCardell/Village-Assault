@@ -132,7 +132,7 @@ func _get_surface_height(x: int) -> int:
 	return int(clamp(_heightmap[x], min_surface_height, max_surface_height))
 
 func _get_flat_width() -> int:
-	var max_width: int = int(max(1, grid_width / 2))
+	var max_width: int = int(max(1, int(grid_width / 2)))
 	return int(clamp(base_flat_width, 1, max_width))
 
 func _is_in_flat_pad(x: int, flat_width: int) -> bool:

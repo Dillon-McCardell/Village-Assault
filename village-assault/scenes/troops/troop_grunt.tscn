@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3 uid="uid://ozoub1a8yccj1"]
+
+[ext_resource type="Script" uid="uid://c8f3n1e0qp55u" path="res://scripts/troops/troop_grunt.gd" id="1"]
+
+[node name="TroopGrunt" type="Node2D"]
+script = ExtResource("1")
+
+[node name="Body" type="Polygon2D" parent="."]
+color = Color(1, 0.7, 0.2, 1)
+polygon = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)

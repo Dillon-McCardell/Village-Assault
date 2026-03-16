@@ -42,3 +42,23 @@ offset_bottom = 80.0
 
 [node name="ShopMenu" type="Control" parent="CanvasLayer/UI"]
 script = ExtResource("3")
+
+[node name="DebugLayer" type="CanvasLayer" parent="."]
+layer = 128
+follow_viewport_enabled = false
+
+[node name="DebugPanel" type="ColorRect" parent="DebugLayer"]
+offset_left = 0.0
+offset_top = 648.0
+offset_right = 1152.0
+offset_bottom = 808.0
+color = Color(0.1, 0.1, 0.1, 1.0)
+
+[node name="DebugOverlay" type="TextEdit" parent="DebugLayer"]
+offset_left = 4.0
+offset_top = 652.0
+offset_right = 1148.0
+offset_bottom = 804.0
+editable = false
+context_menu_enabled = true
+selecting_enabled = true
