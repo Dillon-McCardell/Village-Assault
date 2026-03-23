@@ -8,6 +8,13 @@ extends Node2D
 @onready var debug_overlay: TextEdit = $DebugLayer/DebugOverlay
 
 var _test_unit_scene: PackedScene = preload("res://scenes/test_unit.tscn")
+var _disconnect_overlay_scene: PackedScene = preload("res://scenes/ui/disconnect_overlay.tscn")
+var _disconnect_overlay: CanvasLayer
+var _pause_menu_scene: PackedScene = preload("res://scenes/ui/pause_menu.tscn")
+var _pause_menu: CanvasLayer
+var _local_paused: bool = false
+## Set to true when the remote peer sent a "leaving" RPC before disconnecting
+var _peer_left_intentionally: bool = false
 
 const TROOP_CATEGORY: String = "Troops"
 var _troop_scenes: Dictionary = {
@@ -21,6 +28,25 @@ func _physics_process(_delta: float) -> void:
 	_process_spawn_queue()
 
 func _ready() -> void:
+	GameState.current_scene = "game"
+
+	_disconnect_overlay = _disconnect_overlay_scene.instantiate()
+	add_child(_disconnect_overlay)
+
+	_pause_menu = _pause_menu_scene.instantiate()
+	add_child(_pause_menu)
+	_pause_menu.back_pressed.connect(_on_pause_back)
+	_pause_menu.main_menu_pressed.connect(_on_pause_main_menu)
+
+	GameState.peer_disconnected_graceful.connect(_on_peer_disconnected_graceful)
+	GameState.peer_reconnected.connect(_on_peer_reconnected)
+
+	NetworkManager.server_disconnected.connect(_on_server_disconnected_game)
+	NetworkManager.reconnect_succeeded.connect(_on_reconnect_succeeded_game)
+	NetworkManager.local_disconnected.connect(_on_local_disconnected_game)
+
+	_disconnect_overlay.return_to_menu_pressed.connect(_on_disconnect_return_to_menu)
+
 	spawn_button.pressed.connect(_on_spawn_pressed)
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -30,6 +56,15 @@ func _ready() -> void:
 	_update_camera_limits()
 	DebugConsole.set_label(debug_overlay)
 	DebugConsole.log_msg("Game ready. is_server=%s" % str(multiplayer.is_server()))
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		if multiplayer.multiplayer_peer == null:
+			return
+		if _local_paused:
+			# Unpause is handled by pause_menu's own ESC handler
+			return
+		_request_pause()
 
 func _on_spawn_pressed() -> void:
 	if multiplayer.multiplayer_peer == null:
@@ -145,3 +180,124 @@ func spawn_test_unit(spawn_pos: Vector2, team: int) -> void:
 		unit.set_team(team)
 	units_root.add_child(unit)
 	DebugConsole.log_msg("spawn_test_unit: pos=%s team=%d" % [str(unit.position), team])
+
+
+# --- Disconnect handling ---
+
+func _on_peer_disconnected_graceful(_peer_id: int) -> void:
+	DebugConsole.log_msg("peer_disconnected_graceful: peer_id=%d, intentional=%s" % [_peer_id, str(_peer_left_intentionally)])
+	# Host side: client disconnected or left
+	_pause_menu.hide_menu()
+	_local_paused = false
+	get_tree().paused = true
+	if _peer_left_intentionally:
+		_peer_left_intentionally = false
+		_disconnect_overlay.show_client_left()
+	else:
+		_disconnect_overlay.show_client_disconnected()
+
+func _on_peer_reconnected(_peer_id: int) -> void:
+	DebugConsole.log_msg("peer_reconnected: peer_id=%d, unpausing" % _peer_id)
+	_pause_menu.hide_menu()
+	_local_paused = false
+	_disconnect_overlay.hide_overlay()
+	get_tree().paused = false
+	_update_camera_anchor()
+
+func _on_server_disconnected_game() -> void:
+	# Client side: host disconnected or left
+	_pause_menu.hide_menu()
+	_local_paused = false
+	get_tree().paused = true
+	if _peer_left_intentionally:
+		_peer_left_intentionally = false
+		_disconnect_overlay.show_host_left()
+	else:
+		_disconnect_overlay.show_host_disconnected()
+		NetworkManager.start_auto_reconnect()
+
+func _on_reconnect_succeeded_game() -> void:
+	DebugConsole.log_msg("reconnect_succeeded: unpausing")
+	_pause_menu.hide_menu()
+	_local_paused = false
+	_disconnect_overlay.hide_overlay()
+	get_tree().paused = false
+
+func _on_local_disconnected_game() -> void:
+	DebugConsole.log_msg("local_disconnected: pausing and showing self-disconnect overlay")
+	# Local side pressed F9 — show "you disconnected" and pause
+	_pause_menu.hide_menu()
+	_local_paused = false
+	get_tree().paused = true
+	_disconnect_overlay.show_self_disconnected()
+
+func _on_disconnect_return_to_menu() -> void:
+	NetworkManager.stop_auto_reconnect()
+	NetworkManager.shutdown()
+	get_tree().paused = false
+	get_tree().change_scene_to_file("res://scenes/boot_menu.tscn")
+
+
+# --- Pause menu ---
+
+func _request_pause() -> void:
+	if multiplayer.is_server():
+		_set_paused.rpc(true, 1)
+	else:
+		_request_pause_from_client.rpc_id(1)
+
+func _request_unpause() -> void:
+	if multiplayer.is_server():
+		_set_paused.rpc(false, 0)
+	else:
+		_request_unpause_from_client.rpc_id(1)
+
+@rpc("any_peer", "reliable")
+func _request_pause_from_client() -> void:
+	if not multiplayer.is_server():
+		return
+	var requester := multiplayer.get_remote_sender_id()
+	_set_paused.rpc(true, requester)
+
+@rpc("any_peer", "reliable")
+func _request_unpause_from_client() -> void:
+	if not multiplayer.is_server():
+		return
+	_set_paused.rpc(false, 0)
+
+@rpc("authority", "reliable", "call_local")
+func _set_paused(paused: bool, pauser_id: int = 0) -> void:
+	get_tree().paused = paused
+	if paused:
+		var my_id := multiplayer.get_unique_id()
+		if pauser_id == my_id:
+			_local_paused = true
+			_pause_menu.show_pause_menu()
+		else:
+			_local_paused = false
+			_pause_menu.show_remote_paused()
+	else:
+		_local_paused = false
+		_pause_menu.hide_menu()
+
+func _on_pause_back() -> void:
+	_request_unpause()
+
+func _on_pause_main_menu() -> void:
+	# Tell the other player we're leaving intentionally, then disconnect
+	if multiplayer.multiplayer_peer != null:
+		_notify_leaving.rpc()
+	# Small delay so the RPC has time to send before we kill the peer
+	await get_tree().create_timer(0.1).timeout
+	NetworkManager.shutdown()
+	get_tree().paused = false
+	get_tree().change_scene_to_file("res://scenes/boot_menu.tscn")
+
+## Sent by a player right before they intentionally leave via Main Menu.
+## The receiving side uses this to show "left" instead of "disconnected".
+@rpc("any_peer", "reliable", "call_local")
+func _notify_leaving() -> void:
+	var sender_id := multiplayer.get_remote_sender_id()
+	if sender_id == 0:
+		return  # Ignore local call
+	_peer_left_intentionally = true

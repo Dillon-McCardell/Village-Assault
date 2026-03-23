@@ -45,6 +45,7 @@ script = ExtResource("3")
 
 [node name="DebugLayer" type="CanvasLayer" parent="."]
 layer = 128
+process_mode = 3
 follow_viewport_enabled = false
 
 [node name="DebugPanel" type="ColorRect" parent="DebugLayer"]

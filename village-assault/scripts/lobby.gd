@@ -5,10 +5,33 @@ extends Control
 @onready var start_button: Button = $VBox/StartButton
 
 const GAME_SCENE: String = "res://scenes/game.tscn"
+const BOOT_MENU_SCENE: String = "res://scenes/boot_menu.tscn"
+
+var _disconnect_overlay_scene: PackedScene = preload("res://scenes/ui/disconnect_overlay.tscn")
+var _disconnect_overlay: CanvasLayer
 
 var _player_count: int = 1
 
 func _ready() -> void:
+	# Register current scene for reconnect routing
+	GameState.current_scene = "lobby"
+
+	# Disconnect overlay setup
+	_disconnect_overlay = _disconnect_overlay_scene.instantiate()
+	add_child(_disconnect_overlay)
+
+	# GameState disconnect signals
+	GameState.peer_disconnected_graceful.connect(_on_peer_disconnected_graceful)
+	GameState.peer_reconnected.connect(_on_peer_reconnected)
+
+	# NetworkManager disconnect signals
+	NetworkManager.server_disconnected.connect(_on_server_disconnected_lobby)
+	NetworkManager.reconnect_succeeded.connect(_on_reconnect_succeeded_lobby)
+	NetworkManager.local_disconnected.connect(_on_local_disconnected_lobby)
+
+	# Overlay button signals
+	_disconnect_overlay.return_to_menu_pressed.connect(_on_return_to_menu_pressed)
+
 	multiplayer.peer_connected.connect(_on_peer_changed)
 	multiplayer.peer_disconnected.connect(_on_peer_changed)
 	_update_player_count()
@@ -43,3 +66,32 @@ func _on_start_pressed() -> void:
 @rpc("authority", "reliable", "call_local")
 func start_game() -> void:
 	get_tree().change_scene_to_file(GAME_SCENE)
+
+
+# --- Disconnect handling (Tasks 7.1, 7.2) ---
+
+func _on_peer_disconnected_graceful(_peer_id: int) -> void:
+	_disconnect_overlay.show_client_disconnected()
+
+func _on_peer_reconnected(_peer_id: int) -> void:
+	_disconnect_overlay.hide_overlay()
+	_update_player_count()
+	_update_ui()
+
+func _on_server_disconnected_lobby() -> void:
+	# Client side: host disconnected — show overlay and try to reconnect
+	_disconnect_overlay.show_host_disconnected()
+	NetworkManager.start_auto_reconnect()
+
+func _on_reconnect_succeeded_lobby() -> void:
+	_disconnect_overlay.hide_overlay()
+	_update_player_count()
+	_update_ui()
+
+func _on_local_disconnected_lobby() -> void:
+	_disconnect_overlay.show_client_disconnected()
+
+func _on_return_to_menu_pressed() -> void:
+	NetworkManager.stop_auto_reconnect()
+	NetworkManager.shutdown()
+	get_tree().change_scene_to_file(BOOT_MENU_SCENE)

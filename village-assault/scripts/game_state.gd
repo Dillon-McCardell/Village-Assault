@@ -5,6 +5,8 @@ signal money_updated(peer_id: int, money: int)
 signal local_state_updated(team: int, money: int)
 signal world_settings_updated(map_width: int, map_height: int, map_seed: int)
 signal player_removed(peer_id: int)
+signal peer_disconnected_graceful(peer_id: int)
+signal peer_reconnected(peer_id: int)
 
 enum Team {
 	NONE = -1,
@@ -13,6 +15,9 @@ enum Team {
 }
 
 const STARTING_MONEY: int = 100
+## Which scene the game is currently in, so reconnecting clients land in the right place.
+## Set by scene scripts on _ready(). Values: "boot_menu", "lobby", "game"
+var current_scene: String = "boot_menu"
 const DEFAULT_MAP_WIDTH: int = 64
 const DEFAULT_MAP_HEIGHT: int = 20
 const DEFAULT_MAP_SEED: int = 0
@@ -26,6 +31,8 @@ var map_seed: int = DEFAULT_MAP_SEED
 var _peer_team: Dictionary = {}
 var _peer_money: Dictionary = {}
 var _spawn_queue: Array[Dictionary] = []
+var _inactive_peers: Dictionary = {}
+var _disconnected_peer_id: int = -1
 
 func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -35,26 +42,69 @@ func _ready() -> void:
 		NetworkManager.join_started.connect(_on_join_started)
 
 func _on_host_started(_port: int) -> void:
+	DebugConsole.log_msg("GS._on_host_started: is_server=%s peer_team=%s inactive=%s" % [str(multiplayer.is_server()), str(_peer_team.keys()), str(_inactive_peers.keys())])
 	if not multiplayer.is_server():
 		return
+	var is_rehost := _peer_team.has(1)
 	_assign_team_to_peer(1)
-	if map_seed == DEFAULT_MAP_SEED:
-		map_seed = _generate_seed()
-	_send_world_settings_to_local()
+	if not is_rehost:
+		if map_seed == DEFAULT_MAP_SEED:
+			map_seed = _generate_seed()
+		_send_world_settings_to_local()
 
 func _on_join_started(_address: String, _port: int) -> void:
-	_reset_local_state()
-	_reset_world_settings()
+	if not NetworkManager._is_reconnecting:
+		_reset_local_state()
+		_reset_world_settings()
 
 func _on_peer_connected(peer_id: int) -> void:
+	DebugConsole.log_msg("GS._on_peer_connected: peer=%d is_server=%s inactive=%s" % [peer_id, str(multiplayer.is_server()), str(_inactive_peers.keys())])
 	if multiplayer.is_server():
-		_assign_team_to_peer(peer_id)
+		if not try_restore_peer(peer_id):
+			_assign_team_to_peer(peer_id)
 		_send_world_settings(peer_id)
 
 func _on_peer_disconnected(peer_id: int) -> void:
+	DebugConsole.log_msg("GS._on_peer_disconnected: peer=%d team=%d" % [peer_id, _peer_team.get(peer_id, Team.NONE)])
+	var team: int = _peer_team.get(peer_id, Team.NONE)
+	if team != Team.NONE:
+		_inactive_peers[peer_id] = {
+			"team": team,
+			"money": _peer_money.get(peer_id, 0),
+			"disconnect_time": Time.get_ticks_msec(),
+		}
+		_disconnected_peer_id = peer_id
+		peer_disconnected_graceful.emit(peer_id)
 	_peer_team.erase(peer_id)
 	_peer_money.erase(peer_id)
 	player_removed.emit(peer_id)
+
+func try_restore_peer(new_peer_id: int) -> bool:
+	if _inactive_peers.is_empty():
+		DebugConsole.log_msg("GS.try_restore_peer: no inactive peers")
+		return false
+	var old_peer_id: int = _inactive_peers.keys()[0]
+	DebugConsole.log_msg("GS.try_restore_peer: restoring old=%d as new=%d" % [old_peer_id, new_peer_id])
+	var record: Dictionary = _inactive_peers[old_peer_id]
+	var team: int = record["team"]
+	var money: int = record["money"]
+	_peer_team[new_peer_id] = team
+	_peer_money[new_peer_id] = money
+	if new_peer_id == 1:
+		_receive_player_state(team, money)
+	else:
+		_receive_player_state.rpc_id(new_peer_id, team, money)
+		# Tell the reconnecting client which scene to load
+		_receive_scene_redirect.rpc_id(new_peer_id, current_scene)
+	clear_inactive_peer(old_peer_id)
+	peer_reconnected.emit(new_peer_id)
+	team_assigned.emit(new_peer_id, team)
+	money_updated.emit(new_peer_id, money)
+	return true
+
+func clear_inactive_peer(peer_id: int) -> void:
+	_inactive_peers.erase(peer_id)
+	_disconnected_peer_id = -1
 
 func _assign_team_to_peer(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -89,6 +139,9 @@ func _count_team(team: int) -> int:
 	for assigned_team in _peer_team.values():
 		if assigned_team == team:
 			count += 1
+	for record in _inactive_peers.values():
+		if record["team"] == team:
+			count += 1
 	return count
 
 @rpc("authority", "reliable")
@@ -96,6 +149,22 @@ func _receive_player_state(team: int, money: int) -> void:
 	local_team = team
 	local_money = money
 	local_state_updated.emit(team, money)
+
+## Called by the host to tell a reconnecting client which scene to load.
+@rpc("authority", "reliable")
+func _receive_scene_redirect(scene_name: String) -> void:
+	# Skip if we're already on the correct scene
+	if current_scene == scene_name:
+		return
+	var scene_path: String = ""
+	match scene_name:
+		"game":
+			scene_path = "res://scenes/game.tscn"
+		"lobby":
+			scene_path = "res://scenes/lobby.tscn"
+		_:
+			scene_path = "res://scenes/boot_menu.tscn"
+	get_tree().change_scene_to_file(scene_path)
 
 func get_team_for_peer(peer_id: int) -> int:
 	return _peer_team.get(peer_id, Team.NONE)
@@ -133,6 +202,16 @@ func _reset_world_settings() -> void:
 	map_height = DEFAULT_MAP_HEIGHT
 	map_seed = DEFAULT_MAP_SEED
 	world_settings_updated.emit(map_width, map_height, map_seed)
+
+## Clears all session data. Call when starting a brand new game session.
+func reset_all() -> void:
+	_peer_team.clear()
+	_peer_money.clear()
+	_inactive_peers.clear()
+	_disconnected_peer_id = -1
+	_spawn_queue.clear()
+	_reset_local_state()
+	_reset_world_settings()
 
 func _broadcast_world_settings() -> void:
 	_send_world_settings_to_local()

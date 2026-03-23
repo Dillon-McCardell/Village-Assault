@@ -1,4 +1,9 @@
+class_name BootMenu
 extends Control
+
+## Optional status message set by other scenes before returning to boot menu.
+## For example: BootMenu.return_status_message = "Host unavailable"
+static var return_status_message: String = ""
 
 @onready var main_panel: Control = $MainPanel
 @onready var host_panel: Control = $HostPanel
@@ -14,19 +19,29 @@ const DEFAULT_ADDRESS: String = "127.0.0.1"
 const LOBBY_SCENE: String = "res://scenes/lobby.tscn"
 
 func _ready() -> void:
+	GameState.current_scene = "boot_menu"
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.server_disconnected.connect(_on_server_disconnected)
 	map_size_slider.value_changed.connect(_on_map_size_changed)
 	_show_panel(main_panel)
-	_set_status("Idle")
+
+	if return_status_message != "":
+		_set_status(return_status_message)
+		return_status_message = ""
+	else:
+		_set_status("Idle")
+
 	_update_map_size_label(map_size_slider.value)
 
 func _on_host_pressed() -> void:
 	var map_size := _get_map_size_from_slider()
 	var map_seed_val: int = _generate_seed()
-	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
+	# Reset all session data before starting a new game
+	GameState.reset_all()
+	# Host first so multiplayer peer exists before set_world_settings broadcasts
 	NetworkManager.host()
+	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
 	_set_status("Hosting...")
 	get_tree().change_scene_to_file(LOBBY_SCENE)
 
@@ -38,6 +53,10 @@ func _on_join_pressed() -> void:
 	_set_status("Connecting to %s..." % address)
 
 func _on_connected_to_server() -> void:
+	if NetworkManager._is_reconnecting:
+		# Don't navigate — the host will send a scene redirect via RPC
+		_set_status("Reconnected")
+		return
 	_set_status("Connected")
 	get_tree().change_scene_to_file(LOBBY_SCENE)
 
