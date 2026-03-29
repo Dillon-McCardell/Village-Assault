@@ -21,7 +21,7 @@ A 2-player multiplayer side-on, block-based game built with Godot 4 and GDScript
 
 ### Disconnect Handling
 
-If the client disconnects mid-game, the host's game pauses and waits indefinitely for the client to reconnect. The client can rejoin from the boot menu and their team/money state is restored. If the host disconnects, the client sees a notification and auto-reconnects every 5 seconds.
+If the client disconnects mid-game, the host's game pauses and waits indefinitely for the client to reconnect. The client can rejoin from the boot menu and their team/money state is restored, including active troop replication when they return to the game. If the host disconnects, the client sees a notification and auto-reconnects every 5 seconds.
 
 ### Pause Menu
 
@@ -52,7 +52,7 @@ scripts/
   debug_console.gd  — Autoload: on-screen debug logging
   boot_menu.gd      — Boot menu scene logic
   lobby.gd          — Lobby scene logic
-  game.gd           — Game scene: spawns, pause/unpause, disconnect overlays, ESC menu
+  game.gd           — Game scene: host-authoritative troop spawning, pause/unpause, disconnect overlays, ESC menu
   camera/           — Camera controller
   shop/             — Shop items (troops, defenses, turrets)
   troops/           — Troop behavior scripts
@@ -110,4 +110,4 @@ Or pass the binary path inline:
 
 ## Known Limitations
 
-- Troop state is not synchronized on reconnect. A client who disconnects and reconnects will not see troops spawned while they were away. This is tracked for future work (requires MultiplayerSpawner or snapshot RPC).
+- Troops now use Godot's built-in multiplayer scene replication for spawn, despawn, and reconnect visibility. Non-troop world objects still use their existing local logic.

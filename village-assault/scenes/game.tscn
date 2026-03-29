@@ -20,6 +20,8 @@ script = ExtResource("4")
 
 [node name="Units" type="Node2D" parent="."]
 
+[node name="TroopSpawner" type="MultiplayerSpawner" parent="."]
+
 [node name="CanvasLayer" type="CanvasLayer" parent="."]
 
 [node name="UI" type="Control" parent="CanvasLayer"]

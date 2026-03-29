@@ -5,30 +5,44 @@ extends Node2D
 @export var unit_height: float = 16.0
 @export var attack_range: float = 12.0
 @export var attack_interval: float = 1.0
+@export var item_id: String = ""
+@export var unit_id: int = -1
+var _team: int = GameState.Team.NONE
+@export var team: int = GameState.Team.NONE:
+	set(value):
+		_team = value
+		_update_color()
+	get:
+		return _team
+@export var max_health: int = 1
+@export var current_health: int = 1
+@export var damage: int = 0
+@export var defense: int = 0
 
 @onready var body: Polygon2D = $Body
+@onready var synchronizer: MultiplayerSynchronizer = get_node_or_null("Synchronizer") as MultiplayerSynchronizer
 
-var item_id: String = ""
-var unit_id: int = -1
-var team: int = GameState.Team.NONE
-var max_health: int = 1
-var current_health: int = 1
-var damage: int = 0
-var defense: int = 0
 var _target: Node2D
 var _attack_cooldown: float = 0.0
 var _territory_manager: TerritoryManager
 var _world_rect: Rect2
 
 func _ready() -> void:
+	_configure_synchronizer()
+	if multiplayer.multiplayer_peer != null:
+		set_multiplayer_authority(1, true)
 	add_to_group("troops")
-	_territory_manager = get_tree().get_current_scene().get_node_or_null("TerritoryManager") as TerritoryManager
+	var current_scene := get_tree().get_current_scene()
+	if current_scene != null:
+		_territory_manager = current_scene.get_node_or_null("TerritoryManager") as TerritoryManager
 	if _territory_manager:
 		_world_rect = _territory_manager.get_world_pixel_rect()
 	_snap_to_ground()
 	_update_color()
 
 func _physics_process(delta: float) -> void:
+	if not _has_simulation_authority():
+		return
 	if not is_alive():
 		return
 	_attack_cooldown = maxf(_attack_cooldown - delta, 0.0)
@@ -47,7 +61,6 @@ func _physics_process(delta: float) -> void:
 
 func set_team(value: int) -> void:
 	team = value
-	_update_color()
 
 func set_item_id(value: String) -> void:
 	item_id = value
@@ -56,10 +69,17 @@ func set_unit_id(value: int) -> void:
 	unit_id = value
 
 func initialize_from_spawn_payload(spawn_payload: Dictionary) -> void:
-	max_health = max(1, int(spawn_payload.get("health", 1)))
+	initialize_runtime_state(
+		max(1, int(spawn_payload.get("health", 1))),
+		max(0, int(spawn_payload.get("damage", 0))),
+		max(0, int(spawn_payload.get("defense", 0)))
+	)
+
+func initialize_runtime_state(health: int, damage_value: int, defense_value: int) -> void:
+	max_health = max(1, health)
 	current_health = max_health
-	damage = max(0, int(spawn_payload.get("damage", 0)))
-	defense = max(0, int(spawn_payload.get("defense", 0)))
+	damage = max(0, damage_value)
+	defense = max(0, defense_value)
 
 func sync_current_health(value: int) -> void:
 	current_health = clampi(value, 0, max_health)
@@ -126,7 +146,6 @@ func take_damage(amount: int) -> void:
 		return
 	var applied_damage: int = maxi(1, amount - defense)
 	current_health = maxi(0, current_health - applied_damage)
-	_sync_health()
 	if current_health == 0:
 		_die()
 
@@ -152,29 +171,38 @@ func _get_polygon_vertical_bounds(points: PackedVector2Array) -> Vector2:
 		max_y = maxf(max_y, point.y)
 	return Vector2(min_y, max_y)
 
-func _sync_health() -> void:
-	var game: Node = get_tree().get_current_scene()
-	if game != null and game.has_method("sync_unit_health") and unit_id >= 0:
-		game.sync_unit_health(unit_id, current_health)
-		if _should_replicate_via_rpc(game):
-			game.sync_unit_health.rpc(unit_id, current_health)
-
 func _die() -> void:
-	var game: Node = get_tree().get_current_scene()
-	if game != null and game.has_method("destroy_unit") and unit_id >= 0:
-		game.destroy_unit(unit_id)
-		if _should_replicate_via_rpc(game):
-			game.destroy_unit.rpc(unit_id)
-	else:
-		queue_free()
+	queue_free()
 
 func _has_combat_authority() -> bool:
 	return multiplayer.multiplayer_peer == null or multiplayer.is_server()
 
-func _should_replicate_via_rpc(game: Node) -> bool:
+func _has_simulation_authority() -> bool:
 	if multiplayer.multiplayer_peer == null:
-		return false
-	if not multiplayer.is_server():
-		return false
-	var script := game.get_script() as Script
-	return script != null and script.resource_path == "res://scripts/game.gd"
+		return true
+	return is_multiplayer_authority()
+
+func _configure_synchronizer() -> void:
+	if synchronizer == null:
+		return
+	synchronizer.root_path = NodePath("..")
+	var config := SceneReplicationConfig.new()
+	_add_replicated_property(config, NodePath(":position"), true, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
+	_add_replicated_property(config, NodePath(":team"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":item_id"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":unit_id"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":max_health"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":current_health"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":damage"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":defense"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	synchronizer.replication_config = config
+
+func _add_replicated_property(
+	config: SceneReplicationConfig,
+	path: NodePath,
+	include_on_spawn: bool,
+	replication_mode: SceneReplicationConfig.ReplicationMode
+) -> void:
+	config.add_property(path)
+	config.property_set_spawn(path, include_on_spawn)
+	config.property_set_replication_mode(path, replication_mode)

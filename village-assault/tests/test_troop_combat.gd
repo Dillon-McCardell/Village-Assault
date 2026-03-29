@@ -126,6 +126,43 @@ func test_spawn_test_unit_uses_grunt_stats_for_free_debug_spawn() -> void:
 
 	_clear_node(game)
 
+func test_troop_scene_configures_multiplayer_synchronizer_properties() -> void:
+	var troop := TROOP_SCENES["troop_grunt"].instantiate() as Node2D
+	_mount_node(troop)
+
+	var synchronizer := troop.get_node_or_null("Synchronizer") as MultiplayerSynchronizer
+	assert_that(synchronizer).is_not_null()\
+		.override_failure_message("Expected troop scene to include a MultiplayerSynchronizer child")
+
+	var config := synchronizer.replication_config
+	assert_that(config).is_not_null()\
+		.override_failure_message("Expected troop synchronizer to create a replication config at runtime")
+	assert_bool(config.has_property(NodePath(":position"))).is_true()\
+		.override_failure_message("Expected troop synchronizer to replicate position")
+	assert_bool(config.has_property(NodePath(":current_health"))).is_true()\
+		.override_failure_message("Expected troop synchronizer to replicate current_health")
+	assert_bool(config.has_property(NodePath(":unit_id"))).is_true()\
+		.override_failure_message("Expected troop synchronizer to replicate unit_id")
+
+	_clear_node(troop)
+
+func test_game_scene_configures_multiplayer_spawner_for_troops() -> void:
+	var game_scene: PackedScene = load("res://scenes/game.tscn")
+	var game: Node = game_scene.instantiate()
+	_mount_node(game)
+
+	var spawner := game.get_node_or_null("TroopSpawner") as MultiplayerSpawner
+	assert_that(spawner).is_not_null()\
+		.override_failure_message("Expected game scene to include a MultiplayerSpawner")
+	assert_str(str(spawner.spawn_path)).is_equal("../Units")\
+		.override_failure_message("Expected troop spawner spawn_path to target the Units node")
+
+	var spawnable_scenes := spawner.get_spawnable_scene_count()
+	assert_int(spawnable_scenes).is_greater_equal(5)\
+		.override_failure_message("Expected troop spawner to register all troop scenes and the debug test unit")
+
+	_clear_node(game)
+
 func test_damage_uses_flat_defense_with_minimum_one() -> void:
 	var harness := CombatHarness.new()
 	_mount_node(harness)
