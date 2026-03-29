@@ -5,10 +5,13 @@ const ROLE_CLIENT: String = "client"
 const SCENE_BOOT: String = "boot_menu"
 const SCENE_LOBBY: String = "lobby"
 const SCENE_GAME: String = "game"
+const SCENARIO_GAME_RECONNECT: String = "game_reconnect"
+const SCENARIO_LOBBY_RECONNECT: String = "lobby_reconnect"
 const POST_RECONNECT_DEADLINE_MSEC: int = 5000
 
 var _active: bool = false
 var _role: String = ""
+var _scenario: String = SCENARIO_GAME_RECONNECT
 var _address: String = "127.0.0.1"
 var _port: int = NetworkManager.DEFAULT_PORT
 var _artifacts_dir: String = ""
@@ -28,6 +31,7 @@ var _client_reconnect_succeeded: bool = false
 var _client_complete_sent: bool = false
 var _host_complete_sent: bool = false
 var _post_reconnect_deadline_msec: int = -1
+var _client_lobby_complete_deadline_msec: int = -1
 
 var _current_game: Node = null
 
@@ -41,12 +45,17 @@ func _ready() -> void:
 	if not _active:
 		return
 	_role = String(args.get("test-role", ""))
+	_scenario = String(args.get("test-scenario", SCENARIO_GAME_RECONNECT))
 	_address = String(args.get("test-address", "127.0.0.1"))
 	_port = int(args.get("test-port", NetworkManager.DEFAULT_PORT))
 	_artifacts_dir = String(args.get("test-artifacts-dir", "user://test_harness"))
 	_run_id = String(args.get("test-run-id", "manual"))
 	if _role != ROLE_HOST and _role != ROLE_CLIENT:
 		push_error("TestHarness: invalid test role '%s'" % _role)
+		_active = false
+		return
+	if _scenario != SCENARIO_GAME_RECONNECT and _scenario != SCENARIO_LOBBY_RECONNECT:
+		push_error("TestHarness: invalid test scenario '%s'" % _scenario)
 		_active = false
 		return
 	if not _open_event_file():
@@ -60,7 +69,11 @@ func _process(_delta: float) -> void:
 	if not _active:
 		return
 	if _role == ROLE_CLIENT:
-		_drive_client_game_scenario()
+		match _scenario:
+			SCENARIO_GAME_RECONNECT:
+				_drive_client_game_scenario()
+			SCENARIO_LOBBY_RECONNECT:
+				_drive_client_lobby_scenario()
 
 func is_active() -> bool:
 	return _active
@@ -82,11 +95,14 @@ func on_lobby_ready(lobby: Control) -> void:
 	_emit_event("lobby_ready", {
 		"scene": SCENE_LOBBY,
 		"player_count": _get_lobby_player_count(lobby),
+		"snapshot": _capture_scene_snapshot(),
 	})
 	on_lobby_state_changed(lobby)
 
 func on_lobby_state_changed(lobby: Control) -> void:
 	if not _active or _role != ROLE_HOST or _match_started:
+		return
+	if _scenario != SCENARIO_GAME_RECONNECT:
 		return
 	if _get_lobby_player_count(lobby) < 2:
 		return
@@ -148,7 +164,7 @@ func _on_peer_reconnected(peer_id: int) -> void:
 func _handle_local_disconnected_deferred() -> void:
 	_emit_event("disconnected", {
 		"reason": "local_disconnected",
-		"snapshot": _capture_game_snapshot(),
+		"snapshot": _capture_scene_snapshot(),
 	})
 	if _role == ROLE_CLIENT and not _client_reconnect_started:
 		_client_reconnect_started = true
@@ -160,40 +176,42 @@ func _handle_reconnect_succeeded_deferred() -> void:
 	_emit_event("reconnect_succeeded", {
 		"scene": GameState.current_scene,
 		"peer_id": _safe_peer_id(),
-		"snapshot": _capture_game_snapshot(),
+		"snapshot": _capture_scene_snapshot(),
 	})
+	if _scenario == SCENARIO_LOBBY_RECONNECT:
+		_client_lobby_complete_deadline_msec = Time.get_ticks_msec() + POST_RECONNECT_DEADLINE_MSEC
 
 func _handle_peer_disconnected_deferred(peer_id: int) -> void:
 	_emit_event("disconnected", {
 		"reason": "peer_disconnected",
 		"peer_id": peer_id,
-		"snapshot": _capture_game_snapshot(),
+		"snapshot": _capture_scene_snapshot(),
 	})
 
 func _handle_peer_reconnected_deferred(peer_id: int) -> void:
 	_emit_event("snapshot", {
 		"stage": "post_reconnect",
 		"peer_id": peer_id,
-		"snapshot": _capture_game_snapshot(),
+		"snapshot": _capture_scene_snapshot(),
 	})
 	if not _host_complete_sent:
 		_host_complete_sent = true
 		_emit_event("complete", {
 			"role": _role,
-			"snapshot": _capture_game_snapshot(),
+			"snapshot": _capture_scene_snapshot(),
 		})
 
 func _on_game_test_unit_spawned(unit_id: int) -> void:
 	_spawned_unit_id = unit_id
 	_emit_event("spawn_confirmed", {
 		"unit_id": unit_id,
-		"snapshot": _capture_game_snapshot(),
+		"snapshot": _capture_scene_snapshot(),
 	})
 
 func _drive_client_game_scenario() -> void:
 	if GameState.current_scene != SCENE_GAME:
 		return
-	var snapshot := _capture_game_snapshot()
+	var snapshot := _capture_scene_snapshot()
 	if not _client_pre_disconnect_snapshot_sent:
 		var unit_ids: Array = snapshot.get("visible_unit_ids", [])
 		var has_replicated_unit := false
@@ -225,6 +243,37 @@ func _drive_client_game_scenario() -> void:
 		})
 		_emit_client_complete(snapshot)
 
+func _drive_client_lobby_scenario() -> void:
+	if GameState.current_scene != SCENE_LOBBY:
+		return
+	var scene := get_tree().get_current_scene()
+	if scene == null or not scene.has_method("get_player_count"):
+		return
+	var snapshot := _capture_scene_snapshot()
+	if not _client_pre_disconnect_snapshot_sent:
+		if int(scene.call("get_player_count")) < 2:
+			return
+		_client_pre_disconnect_snapshot_sent = true
+		_emit_event("snapshot", {
+			"stage": "pre_disconnect",
+			"snapshot": snapshot,
+		})
+		if not _client_disconnect_triggered:
+			_client_disconnect_triggered = true
+			NetworkManager.simulate_disconnect()
+		return
+	if not _client_reconnect_succeeded:
+		return
+	if snapshot.get("scene", "") == SCENE_LOBBY and not bool(snapshot.get("disconnect_overlay_visible", true)):
+		_emit_client_complete(snapshot)
+		return
+	if _client_lobby_complete_deadline_msec > 0 and Time.get_ticks_msec() >= _client_lobby_complete_deadline_msec:
+		_emit_event("failure", {
+			"message": "Timed out waiting for lobby restore after reconnect",
+			"snapshot": snapshot,
+		})
+		_emit_client_complete(snapshot)
+
 func _emit_client_complete(snapshot: Dictionary) -> void:
 	if _client_complete_sent:
 		return
@@ -238,7 +287,7 @@ func _emit_client_complete(snapshot: Dictionary) -> void:
 		"snapshot": snapshot,
 	})
 
-func _capture_game_snapshot() -> Dictionary:
+func _capture_scene_snapshot() -> Dictionary:
 	var scene := get_tree().get_current_scene()
 	if scene != null and scene.has_method("get_test_snapshot"):
 		return scene.call("get_test_snapshot")
@@ -248,6 +297,9 @@ func _capture_game_snapshot() -> Dictionary:
 		"is_server": multiplayer.is_server(),
 		"local_team": GameState.local_team,
 		"local_money": GameState.local_money,
+		"map_width": GameState.map_width,
+		"map_height": GameState.map_height,
+		"map_seed": GameState.map_seed,
 		"paused": get_tree().paused,
 		"disconnect_overlay_visible": false,
 		"disconnect_overlay_message": "",

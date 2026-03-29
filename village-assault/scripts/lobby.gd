@@ -105,3 +105,20 @@ func get_player_count() -> int:
 
 func start_game_for_test() -> void:
 	_on_start_pressed()
+
+func get_test_snapshot() -> Dictionary:
+	return {
+		"scene": GameState.current_scene,
+		"peer_id": multiplayer.get_unique_id() if multiplayer.multiplayer_peer != null else 0,
+		"is_server": multiplayer.is_server(),
+		"local_team": GameState.local_team,
+		"local_money": GameState.local_money,
+		"map_width": GameState.map_width,
+		"map_height": GameState.map_height,
+		"map_seed": GameState.map_seed,
+		"paused": get_tree().paused,
+		"disconnect_overlay_visible": _disconnect_overlay.is_overlay_visible(),
+		"disconnect_overlay_message": _disconnect_overlay.get_message_text(),
+		"visible_unit_ids": [],
+		"player_count": _player_count,
+	}
