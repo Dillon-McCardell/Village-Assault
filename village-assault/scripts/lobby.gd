@@ -36,6 +36,8 @@ func _ready() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_changed)
 	_update_player_count()
 	_update_ui()
+	if TestHarness.is_active():
+		TestHarness.on_lobby_ready(self)
 
 func _on_peer_changed(_peer_id: int) -> void:
 	_update_player_count()
@@ -57,6 +59,8 @@ func _update_ui() -> void:
 	else:
 		status_label.text = "Waiting for host to start..."
 		start_button.visible = false
+	if TestHarness.is_active():
+		TestHarness.on_lobby_state_changed(self)
 
 func _on_start_pressed() -> void:
 	if not multiplayer.is_server():
@@ -95,3 +99,9 @@ func _on_return_to_menu_pressed() -> void:
 	NetworkManager.stop_auto_reconnect()
 	NetworkManager.shutdown()
 	get_tree().change_scene_to_file(BOOT_MENU_SCENE)
+
+func get_player_count() -> int:
+	return _player_count
+
+func start_game_for_test() -> void:
+	_on_start_pressed()

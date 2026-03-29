@@ -1,5 +1,7 @@
 extends Node2D
 
+signal test_unit_spawned(unit_id: int)
+
 @onready var units_root: Node2D = $Units
 @onready var troop_spawner: MultiplayerSpawner = $TroopSpawner
 @onready var spawn_button: Button = $CanvasLayer/UI/SpawnButton
@@ -65,6 +67,8 @@ func _ready() -> void:
 	_update_camera_limits()
 	DebugConsole.set_label(debug_overlay)
 	DebugConsole.log_msg("Game ready. is_server=%s" % str(multiplayer.is_server()))
+	if TestHarness.is_active():
+		TestHarness.on_game_ready(self)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
@@ -197,6 +201,7 @@ func spawn_test_unit(spawn_pos: Vector2, team: int, unit_id: int, spawn_payload:
 	_initialize_spawned_unit(unit, spawn_pos, team, "troop_grunt", unit_id, spawn_payload)
 	units_root.add_child(unit)
 	DebugConsole.log_msg("spawn_test_unit: pos=%s team=%d unit_id=%d" % [str(unit.position), team, unit_id])
+	test_unit_spawned.emit(unit_id)
 
 func _configure_troop_spawner() -> void:
 	troop_spawner.spawn_path = NodePath("../Units")
@@ -218,6 +223,8 @@ func _initialize_spawned_unit(
 ) -> void:
 	unit.name = "Troop_%d" % unit_id
 	unit.position = pos
+	if unit.has_method("prepare_for_network_spawn"):
+		unit.prepare_for_network_spawn()
 	if multiplayer.multiplayer_peer != null:
 		unit.set_multiplayer_authority(1, true)
 	if unit.has_method("set_team"):
@@ -360,3 +367,29 @@ func _notify_leaving() -> void:
 	if sender_id == 0:
 		return  # Ignore local call
 	_peer_left_intentionally = true
+
+func spawn_local_test_unit_for_test() -> void:
+	if not multiplayer.is_server():
+		return
+	request_spawn_test_unit()
+
+func get_test_snapshot() -> Dictionary:
+	var unit_ids: Array[int] = []
+	for child in units_root.get_children():
+		if child != null and child.has_method("get_unit_id"):
+			unit_ids.append(int(child.get_unit_id()))
+	unit_ids.sort()
+	var peer_id := 0
+	if multiplayer.multiplayer_peer != null:
+		peer_id = multiplayer.get_unique_id()
+	return {
+		"scene": GameState.current_scene,
+		"peer_id": peer_id,
+		"is_server": multiplayer.is_server(),
+		"local_team": GameState.local_team,
+		"local_money": GameState.local_money,
+		"paused": get_tree().paused,
+		"disconnect_overlay_visible": _disconnect_overlay.is_overlay_visible(),
+		"disconnect_overlay_message": _disconnect_overlay.get_message_text(),
+		"visible_unit_ids": unit_ids,
+	}

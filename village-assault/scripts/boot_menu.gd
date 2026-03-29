@@ -33,24 +33,17 @@ func _ready() -> void:
 		_set_status("Idle")
 
 	_update_map_size_label(map_size_slider.value)
+	if TestHarness.is_active():
+		TestHarness.on_boot_menu_ready(self)
 
 func _on_host_pressed() -> void:
-	var map_size := _get_map_size_from_slider()
-	var map_seed_val: int = _generate_seed()
-	# Reset all session data before starting a new game
-	GameState.reset_all()
-	# Host first so multiplayer peer exists before set_world_settings broadcasts
-	NetworkManager.host()
-	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
-	_set_status("Hosting...")
-	get_tree().change_scene_to_file(LOBBY_SCENE)
+	start_host_for_test(NetworkManager.DEFAULT_PORT)
 
 func _on_join_pressed() -> void:
 	var address := join_address_input.text.strip_edges()
 	if address.is_empty():
 		address = DEFAULT_ADDRESS
-	NetworkManager.join(address)
-	_set_status("Connecting to %s..." % address)
+	join_for_test(address, NetworkManager.DEFAULT_PORT)
 
 func _on_connected_to_server() -> void:
 	if NetworkManager._is_reconnecting:
@@ -111,3 +104,16 @@ func _generate_seed() -> int:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	return rng.randi()
+
+func start_host_for_test(port: int) -> void:
+	var map_size := _get_map_size_from_slider()
+	var map_seed_val: int = _generate_seed()
+	GameState.reset_all()
+	NetworkManager.host(port)
+	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
+	_set_status("Hosting...")
+	get_tree().change_scene_to_file(LOBBY_SCENE)
+
+func join_for_test(address: String, port: int) -> void:
+	NetworkManager.join(address, port)
+	_set_status("Connecting to %s..." % address)

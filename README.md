@@ -70,43 +70,10 @@ Three autoloads are registered in `project.godot`:
 | `GameState` | Authoritative game state: team assignments, money, spawn queue, inactive peer tracking, scene redirect |
 | `DebugConsole` | On-screen debug log overlay (visible below the game viewport) |
 
-## Running Tests
+## Testing
 
-Tests use [GdUnit4](https://github.com/MikeSchulze/gdUnit4) and live in `village-assault/tests/`. They are property-based tests that run 100 randomized iterations per property with deterministic seeds.
-
-### From the CLI
-
-```bash
-export GODOT_BIN=/path/to/godot
-cd village-assault
-./addons/gdUnit4/runtest.sh --add res://tests/
-```
-
-To run a single test file:
-
-```bash
-./addons/gdUnit4/runtest.sh --add res://tests/test_disconnect_handling.gd
-```
-
-Or pass the binary path inline:
-
-```bash
-./addons/gdUnit4/runtest.sh --godot_binary /path/to/godot --add res://tests/
-```
-
-### From the Godot Editor
-
-1. Open the project in Godot 4.
-2. Enable the GdUnit4 plugin under **Project → Project Settings → Plugins**.
-3. Open the GdUnit4 panel (bottom dock) and run tests from there.
-
-### Test Suites
-
-| File | Covers |
-|---|---|
-| `test_unit_spawning.gd` | Spawn queue FIFO, troop scene mapping, invalid request rejection |
-| `test_disconnect_handling.gd` | State preservation, team reservation, restore round-trip, state erasure, pause/unpause |
-| `test_troop_combat.gd` | Troop stat payloads, spawn-time stat initialization, damage/defense resolution, enemy combat, survivor movement, friendly non-engagement, debug spawn grunt stats |
+Testing instructions, GdUnit4 suite coverage, and the reconnection acceptance
+harness are documented in [TESTING.md](./TESTING.md).
 
 ## Known Limitations
 

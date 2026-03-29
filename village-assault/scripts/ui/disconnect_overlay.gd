@@ -46,3 +46,9 @@ func show_host_disconnected() -> void:
 
 func hide_overlay() -> void:
 	_background.visible = false
+
+func is_overlay_visible() -> bool:
+	return _background.visible
+
+func get_message_text() -> String:
+	return _message_label.text

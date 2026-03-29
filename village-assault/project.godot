@@ -27,6 +27,7 @@ window/size/window_height_override=808
 NetworkManager="*res://scripts/network/network_manager.gd"
 GameState="*res://scripts/game_state.gd"
 DebugConsole="*res://scripts/debug_console.gd"
+TestHarness="*res://scripts/testing/test_harness.gd"
 
 [editor_plugins]
 

@@ -20,15 +20,20 @@ var _team: int = GameState.Team.NONE
 @export var defense: int = 0
 
 @onready var body: Polygon2D = $Body
-@onready var synchronizer: MultiplayerSynchronizer = get_node_or_null("Synchronizer") as MultiplayerSynchronizer
+var synchronizer: MultiplayerSynchronizer = null
 
 var _target: Node2D
 var _attack_cooldown: float = 0.0
 var _territory_manager: TerritoryManager
 var _world_rect: Rect2
 
-func _ready() -> void:
+func _enter_tree() -> void:
 	_configure_synchronizer()
+
+func prepare_for_network_spawn() -> void:
+	_configure_synchronizer()
+
+func _ready() -> void:
 	if multiplayer.multiplayer_peer != null:
 		set_multiplayer_authority(1, true)
 	add_to_group("troops")
@@ -183,6 +188,8 @@ func _has_simulation_authority() -> bool:
 	return is_multiplayer_authority()
 
 func _configure_synchronizer() -> void:
+	if synchronizer == null:
+		synchronizer = get_node_or_null("Synchronizer") as MultiplayerSynchronizer
 	if synchronizer == null:
 		return
 	synchronizer.root_path = NodePath("..")
