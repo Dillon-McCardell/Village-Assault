@@ -38,7 +38,7 @@ func _physics_process(_delta: float) -> void:
 	_process_spawn_queue()
 
 func _ready() -> void:
-	GameState.current_scene = "game"
+	GameState.set_current_scene("game")
 	_configure_troop_spawner()
 
 	_disconnect_overlay = _disconnect_overlay_scene.instantiate()

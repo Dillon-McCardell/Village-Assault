@@ -19,7 +19,7 @@ const DEFAULT_ADDRESS: String = "127.0.0.1"
 const LOBBY_SCENE: String = "res://scenes/lobby.tscn"
 
 func _ready() -> void:
-	GameState.current_scene = "boot_menu"
+	GameState.set_current_scene("boot_menu")
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.server_disconnected.connect(_on_server_disconnected)

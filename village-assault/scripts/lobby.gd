@@ -14,7 +14,7 @@ var _player_count: int = 1
 
 func _ready() -> void:
 	# Register current scene for reconnect routing
-	GameState.current_scene = "lobby"
+	GameState.set_current_scene("lobby")
 
 	# Disconnect overlay setup
 	_disconnect_overlay = _disconnect_overlay_scene.instantiate()

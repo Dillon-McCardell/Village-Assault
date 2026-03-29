@@ -15,6 +15,8 @@ enum Team {
 }
 
 const STARTING_MONEY: int = 100
+const PASSIVE_INCOME_INTERVAL_SEC: float = 10.0
+const PASSIVE_INCOME_AMOUNT: int = 1
 ## Which scene the game is currently in, so reconnecting clients land in the right place.
 ## Set by scene scripts on _ready(). Values: "boot_menu", "lobby", "game"
 var current_scene: String = "boot_menu"
@@ -33,8 +35,10 @@ var _peer_money: Dictionary = {}
 var _spawn_queue: Array[Dictionary] = []
 var _inactive_peers: Dictionary = {}
 var _disconnected_peer_id: int = -1
+var _passive_income_timer: Timer = null
 
 func _ready() -> void:
+	_setup_passive_income_timer()
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	if NetworkManager:
@@ -47,12 +51,14 @@ func _on_host_started(_port: int) -> void:
 		return
 	var is_rehost := _peer_team.has(1)
 	_assign_team_to_peer(1)
+	_update_passive_income_timer_state()
 	if not is_rehost:
 		if map_seed == DEFAULT_MAP_SEED:
 			map_seed = _generate_seed()
 		_send_world_settings_to_local()
 
 func _on_join_started(_address: String, _port: int) -> void:
+	_update_passive_income_timer_state()
 	if not NetworkManager._is_reconnecting:
 		_reset_local_state()
 		_reset_world_settings()
@@ -172,6 +178,10 @@ func get_team_for_peer(peer_id: int) -> int:
 func get_money_for_peer(peer_id: int) -> int:
 	return _peer_money.get(peer_id, 0)
 
+func set_current_scene(scene_name: String) -> void:
+	current_scene = scene_name
+	_update_passive_income_timer_state()
+
 func set_money_for_peer(peer_id: int, money: int) -> void:
 	if not multiplayer.is_server():
 		return
@@ -210,6 +220,8 @@ func reset_all() -> void:
 	_inactive_peers.clear()
 	_disconnected_peer_id = -1
 	_spawn_queue.clear()
+	if _passive_income_timer != null:
+		_passive_income_timer.stop()
 	_reset_local_state()
 	_reset_world_settings()
 
@@ -236,6 +248,37 @@ func _generate_seed() -> int:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	return rng.randi()
+
+func _setup_passive_income_timer() -> void:
+	if _passive_income_timer != null:
+		return
+	_passive_income_timer = Timer.new()
+	_passive_income_timer.wait_time = PASSIVE_INCOME_INTERVAL_SEC
+	_passive_income_timer.one_shot = false
+	_passive_income_timer.timeout.connect(_on_passive_income_timer_timeout)
+	add_child(_passive_income_timer)
+
+func _update_passive_income_timer_state() -> void:
+	if _passive_income_timer == null:
+		return
+	var should_run := multiplayer.multiplayer_peer != null \
+		and multiplayer.is_server() \
+		and current_scene == "game"
+	if should_run:
+		if _passive_income_timer.is_stopped():
+			_passive_income_timer.start()
+	else:
+		_passive_income_timer.stop()
+
+func _on_passive_income_timer_timeout() -> void:
+	if not multiplayer.is_server():
+		return
+	if current_scene != "game":
+		return
+	for raw_peer_id in _peer_money.keys():
+		var peer_id := int(raw_peer_id)
+		var current_money := get_money_for_peer(peer_id)
+		set_money_for_peer(peer_id, current_money + PASSIVE_INCOME_AMOUNT)
 
 func get_team_name(team: int) -> String:
 	match team:
