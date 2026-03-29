@@ -16,5 +16,8 @@ func get_stats_label() -> String:
 	return "♡ %d ⚔ %d ⛨ %d" % [health, damage, defense]
 
 func get_spawn_payload() -> Dictionary:
-	# Placeholder for future spawn data.
-	return {}
+	return {
+		"health": health,
+		"damage": damage,
+		"defense": defense,
+	}

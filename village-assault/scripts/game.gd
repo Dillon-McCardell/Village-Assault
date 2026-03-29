@@ -23,6 +23,13 @@ var _troop_scenes: Dictionary = {
 	"troop_brute":  preload("res://scenes/troops/troop_brute.tscn"),
 	"troop_scout":  preload("res://scenes/troops/troop_scout.tscn"),
 }
+var _troop_items: Dictionary = {
+	"troop_grunt": preload("res://scripts/shop/troops/troop_grunt.gd").new(),
+	"troop_ranger": preload("res://scripts/shop/troops/troop_ranger.gd").new(),
+	"troop_brute": preload("res://scripts/shop/troops/troop_brute.gd").new(),
+	"troop_scout": preload("res://scripts/shop/troops/troop_scout.gd").new(),
+}
+var _next_unit_id: int = 1
 
 func _physics_process(_delta: float) -> void:
 	_process_spawn_queue()
@@ -143,19 +150,56 @@ func _process_spawn_queue() -> void:
 	if scene == null:
 		DebugConsole.log_msg("DISCARD: no scene for item_id '%s'" % request.get("item_id", ""))
 		return
+	var spawn_payload: Dictionary = get_troop_spawn_payload(request["item_id"])
+	if spawn_payload.is_empty():
+		DebugConsole.log_msg("DISCARD: no spawn payload for item_id '%s'" % request.get("item_id", ""))
+		return
 	DebugConsole.log_msg("Spawning %s at %s team %d" % [request["item_id"], str(pos), team])
-	spawn_unit.rpc(pos, team, request["item_id"])
+	var unit_id := _next_unit_id
+	_next_unit_id += 1
+	spawn_unit.rpc(pos, team, request["item_id"], unit_id, spawn_payload)
 
 @rpc("authority", "reliable", "call_local")
-func spawn_unit(pos: Vector2, team: int, item_id: String) -> void:
+func spawn_unit(pos: Vector2, team: int, item_id: String, unit_id: int, spawn_payload: Dictionary) -> void:
 	var scene: PackedScene = _troop_scenes.get(item_id)
 	if scene == null:
 		return
 	var unit := scene.instantiate() as Node2D
+	unit.name = "Troop_%d" % unit_id
 	unit.position = pos
 	if unit.has_method("set_team"):
 		unit.set_team(team)
+	if unit.has_method("set_item_id"):
+		unit.set_item_id(item_id)
+	if unit.has_method("set_unit_id"):
+		unit.set_unit_id(unit_id)
+	if unit.has_method("initialize_from_spawn_payload"):
+		unit.initialize_from_spawn_payload(spawn_payload)
 	units_root.add_child(unit)
+
+func get_troop_spawn_payload(item_id: String) -> Dictionary:
+	var item = _troop_items.get(item_id)
+	if item == null:
+		return {}
+	return item.get_spawn_payload()
+
+func get_unit_by_id(unit_id: int) -> Node2D:
+	return units_root.get_node_or_null("Troop_%d" % unit_id) as Node2D
+
+@rpc("authority", "reliable", "call_local")
+func sync_unit_health(unit_id: int, current_health: int) -> void:
+	var unit := get_unit_by_id(unit_id)
+	if unit == null:
+		return
+	if unit.has_method("sync_current_health"):
+		unit.sync_current_health(current_health)
+
+@rpc("authority", "reliable", "call_local")
+func destroy_unit(unit_id: int) -> void:
+	var unit := get_unit_by_id(unit_id)
+	if unit == null:
+		return
+	unit.queue_free()
 
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
@@ -170,16 +214,26 @@ func request_spawn_test_unit() -> void:
 	var spawn_pos: Vector2 = territory_manager.get_next_spawn_position_for_team(team)
 	if not territory_manager.is_world_pos_in_team_territory(spawn_pos, team):
 		return
-	spawn_test_unit.rpc(spawn_pos, team)
+	var unit_id := _next_unit_id
+	_next_unit_id += 1
+	var spawn_payload: Dictionary = get_troop_spawn_payload("troop_grunt")
+	spawn_test_unit.rpc(spawn_pos, team, unit_id, spawn_payload)
 
 @rpc("authority", "reliable", "call_local")
-func spawn_test_unit(spawn_pos: Vector2, team: int) -> void:
+func spawn_test_unit(spawn_pos: Vector2, team: int, unit_id: int, spawn_payload: Dictionary) -> void:
 	var unit := _test_unit_scene.instantiate() as Node2D
+	unit.name = "Troop_%d" % unit_id
 	unit.position = spawn_pos
 	if unit.has_method("set_team"):
 		unit.set_team(team)
+	if unit.has_method("set_item_id"):
+		unit.set_item_id("troop_grunt")
+	if unit.has_method("set_unit_id"):
+		unit.set_unit_id(unit_id)
+	if unit.has_method("initialize_from_spawn_payload"):
+		unit.initialize_from_spawn_payload(spawn_payload)
 	units_root.add_child(unit)
-	DebugConsole.log_msg("spawn_test_unit: pos=%s team=%d" % [str(unit.position), team])
+	DebugConsole.log_msg("spawn_test_unit: pos=%s team=%d unit_id=%d" % [str(unit.position), team, unit_id])
 
 
 # --- Disconnect handling ---

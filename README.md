@@ -17,6 +17,7 @@ A 2-player multiplayer side-on, block-based game built with Godot 4 and GDScript
 2. The second player clicks **Join** and enters the host's IP (defaults to `127.0.0.1` for local play).
 3. Both players land in the Lobby. The host clicks **Start** when ready.
 4. In-game, purchase troops from the shop to attack the opposing side.
+5. Troops now use their shop `health`, `damage`, and `defense` stats in combat. When opposing troops meet, they stop, exchange hits, and the survivor resumes marching.
 
 ### Disconnect Handling
 
@@ -29,6 +30,10 @@ Press **ESC** to pause the game for both players. The pausing player sees a menu
 ### Debug Disconnect (F9)
 
 Press **F9** to simulate a network disconnect without closing the window. Press F9 again to reconnect. The host re-hosts on the same port; the client rejoins the last host address. Both sides pause and show an overlay during the disconnect. Useful for testing disconnect/reconnect flows.
+
+### Debug Spawn Button
+
+The in-game **Spawn Test Unit** button spawns a free troop for the local player's team. It uses the grunt troop's runtime combat stats, but does not deduct money.
 
 ## Architecture
 
@@ -101,6 +106,7 @@ Or pass the binary path inline:
 |---|---|
 | `test_unit_spawning.gd` | Spawn queue FIFO, troop scene mapping, invalid request rejection |
 | `test_disconnect_handling.gd` | State preservation, team reservation, restore round-trip, state erasure, pause/unpause |
+| `test_troop_combat.gd` | Troop stat payloads, spawn-time stat initialization, damage/defense resolution, enemy combat, survivor movement, friendly non-engagement, debug spawn grunt stats |
 
 ## Known Limitations
 
