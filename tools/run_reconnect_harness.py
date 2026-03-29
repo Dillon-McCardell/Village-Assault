@@ -275,6 +275,21 @@ def main() -> int:
             timeout_sec=args.timeout_sec,
             label="client lobby_ready",
         )
+        host_lobby_count_event = wait_for_event(
+            readers=readers,
+            processes=processes,
+            predicate=lambda event: (
+                event.get("role") == "host"
+                and event.get("event") == "lobby_state_changed"
+                and int(event.get("player_count", 0)) >= 2
+            ),
+            timeout_sec=args.timeout_sec,
+            label="host lobby player_count >= 2",
+        )
+        assert_true(
+            int(host_lobby_count_event["player_count"]) >= 2,
+            "Host lobby never observed the client joining.",
+        )
         if args.scenario == SCENARIO_GAME_RECONNECT:
             wait_for_event(
                 readers=readers,

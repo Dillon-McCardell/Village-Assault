@@ -11,6 +11,7 @@ const ITEM_SCRIPTS: Array = [
 	preload("res://scripts/shop/troops/troop_ranger.gd"),
 	preload("res://scripts/shop/troops/troop_brute.gd"),
 	preload("res://scripts/shop/troops/troop_scout.gd"),
+	# TODO: Add the Miner troop here once resource harvesting and delivery are implemented.
 	preload("res://scripts/shop/defense/defense_gate.gd"),
 	preload("res://scripts/shop/defense/defense_stairs.gd"),
 	preload("res://scripts/shop/defense/defense_tower.gd"),
@@ -27,6 +28,17 @@ var _item_buttons: Array = []
 var _category_expanded: Array[bool] = []
 var _shop_open: bool = false
 var _shop_data: Array = []
+
+func _has_active_multiplayer_peer() -> bool:
+	return multiplayer.multiplayer_peer != null
+
+func _is_multiplayer_server() -> bool:
+	return _has_active_multiplayer_peer() and multiplayer.is_server()
+
+func _get_local_peer_id_or_default(default_value: int = 0) -> int:
+	if not _has_active_multiplayer_peer():
+		return default_value
+	return multiplayer.get_unique_id()
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -137,9 +149,11 @@ func _on_item_pressed(category_index: int, item_index: int) -> void:
 	var item := _get_item(category_index, item_index)
 	if item == null:
 		return
-	if multiplayer.is_server():
-		_process_purchase_request(multiplayer.get_unique_id(), item)
+	if _is_multiplayer_server():
+		_process_purchase_request(_get_local_peer_id_or_default(1), item)
 	else:
+		if not _has_active_multiplayer_peer():
+			return
 		_request_purchase.rpc_id(1, category_index, item_index)
 
 func _open_shop() -> void:
@@ -196,7 +210,7 @@ func _get_item(category_index: int, item_index: int) -> ShopItem:
 
 @rpc("any_peer", "reliable")
 func _request_purchase(category_index: int, item_index: int) -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	var peer_id := multiplayer.get_remote_sender_id()
 	if peer_id == 0:
@@ -214,6 +228,7 @@ func _process_purchase_request(peer_id: int, item: ShopItem) -> void:
 	GameState.set_money_for_peer(peer_id, current_money - price)
 	item_purchased.emit(item.id, price)
 	if item.category == "Troops":
+		# TODO: Gate Miner purchases on resource-system readiness and mining-specific validation.
 		var team := GameState.get_team_for_peer(peer_id)
 		DebugConsole.log_msg("Enqueuing spawn: peer=%d item=%s team=%d" % [peer_id, item.id, team])
 		GameState.enqueue_spawn({ "peer_id": peer_id, "item_id": item.id, "team": team })

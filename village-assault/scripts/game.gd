@@ -34,6 +34,17 @@ var _troop_items: Dictionary = {
 }
 var _next_unit_id: int = 1
 
+func _has_active_multiplayer_peer() -> bool:
+	return multiplayer.multiplayer_peer != null
+
+func _is_multiplayer_server() -> bool:
+	return _has_active_multiplayer_peer() and multiplayer.is_server()
+
+func _get_local_peer_id_or_default(default_value: int = 0) -> int:
+	if not _has_active_multiplayer_peer():
+		return default_value
+	return multiplayer.get_unique_id()
+
 func _physics_process(_delta: float) -> void:
 	_process_spawn_queue()
 
@@ -66,7 +77,7 @@ func _ready() -> void:
 	_update_status()
 	_update_camera_limits()
 	DebugConsole.set_label(debug_overlay)
-	DebugConsole.log_msg("Game ready. is_server=%s" % str(multiplayer.is_server()))
+	DebugConsole.log_msg("Game ready. is_server=%s" % str(_is_multiplayer_server()))
 	if TestHarness.is_active():
 		TestHarness.on_game_ready(self)
 
@@ -83,7 +94,7 @@ func _on_spawn_pressed() -> void:
 	if multiplayer.multiplayer_peer == null:
 		push_warning("Not connected. Host or join before spawning.")
 		return
-	if multiplayer.is_server():
+	if _is_multiplayer_server():
 		request_spawn_test_unit()
 	else:
 		request_spawn_test_unit.rpc_id(1)
@@ -91,7 +102,7 @@ func _on_spawn_pressed() -> void:
 func _update_status() -> void:
 	if multiplayer.multiplayer_peer == null:
 		status_label.text = "Status: Offline"
-	elif multiplayer.is_server():
+	elif _is_multiplayer_server():
 		status_label.text = "Status: Hosting"
 	else:
 		status_label.text = "Status: Connected"
@@ -138,7 +149,7 @@ func _update_camera_limits() -> void:
 		camera.set_world_rect(world_rect)
 
 func _process_spawn_queue() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	var request := GameState.dequeue_spawn()
 	if request.is_empty():
@@ -182,7 +193,7 @@ func get_unit_by_id(unit_id: int) -> Node2D:
 
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	var requester_id := multiplayer.get_remote_sender_id()
 	if requester_id == 0:
@@ -307,27 +318,27 @@ func _on_disconnect_return_to_menu() -> void:
 # --- Pause menu ---
 
 func _request_pause() -> void:
-	if multiplayer.is_server():
+	if _is_multiplayer_server():
 		_set_paused.rpc(true, 1)
 	else:
 		_request_pause_from_client.rpc_id(1)
 
 func _request_unpause() -> void:
-	if multiplayer.is_server():
+	if _is_multiplayer_server():
 		_set_paused.rpc(false, 0)
 	else:
 		_request_unpause_from_client.rpc_id(1)
 
 @rpc("any_peer", "reliable")
 func _request_pause_from_client() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	var requester := multiplayer.get_remote_sender_id()
 	_set_paused.rpc(true, requester)
 
 @rpc("any_peer", "reliable")
 func _request_unpause_from_client() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	_set_paused.rpc(false, 0)
 
@@ -335,7 +346,7 @@ func _request_unpause_from_client() -> void:
 func _set_paused(paused: bool, pauser_id: int = 0) -> void:
 	get_tree().paused = paused
 	if paused:
-		var my_id := multiplayer.get_unique_id()
+		var my_id := _get_local_peer_id_or_default()
 		if pauser_id == my_id:
 			_local_paused = true
 			_pause_menu.show_pause_menu()
@@ -369,7 +380,7 @@ func _notify_leaving() -> void:
 	_peer_left_intentionally = true
 
 func spawn_local_test_unit_for_test() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	request_spawn_test_unit()
 
@@ -379,13 +390,10 @@ func get_test_snapshot() -> Dictionary:
 		if child != null and child.has_method("get_unit_id"):
 			unit_ids.append(int(child.get_unit_id()))
 	unit_ids.sort()
-	var peer_id := 0
-	if multiplayer.multiplayer_peer != null:
-		peer_id = multiplayer.get_unique_id()
 	return {
 		"scene": GameState.current_scene,
-		"peer_id": peer_id,
-		"is_server": multiplayer.is_server(),
+		"peer_id": _get_local_peer_id_or_default(),
+		"is_server": _is_multiplayer_server(),
 		"local_team": GameState.local_team,
 		"local_money": GameState.local_money,
 		"map_width": GameState.map_width,

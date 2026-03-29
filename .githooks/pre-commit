@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+printf '%s\n' "pre-commit: running full automated test suite" >&2
+
+cd "$repo_root"
+./tools/run_all_tests.sh

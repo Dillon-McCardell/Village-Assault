@@ -17,6 +17,8 @@ enum Team {
 const STARTING_MONEY: int = 100
 const PASSIVE_INCOME_INTERVAL_SEC: float = 10.0
 const PASSIVE_INCOME_AMOUNT: int = 1
+# TODO: Replace or supplement passive income with host-authoritative miner delivery income.
+# TODO: Add an explicit resource-return money credit API for mined gold hand-ins.
 ## Which scene the game is currently in, so reconnecting clients land in the right place.
 ## Set by scene scripts on _ready(). Values: "boot_menu", "lobby", "game"
 var current_scene: String = "boot_menu"
@@ -134,7 +136,7 @@ func set_world_settings(width: int, height: int, map_seed_val: int) -> void:
 	map_height = height
 	map_seed = map_seed_val
 	world_settings_updated.emit(map_width, map_height, map_seed)
-	if multiplayer.is_server():
+	if multiplayer.multiplayer_peer != null and multiplayer.is_server():
 		_broadcast_world_settings()
 
 func set_world_size(width: int, height: int) -> void:

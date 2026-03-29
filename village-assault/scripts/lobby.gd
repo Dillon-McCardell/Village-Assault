@@ -12,6 +12,22 @@ var _disconnect_overlay: CanvasLayer
 
 var _player_count: int = 1
 
+func _has_active_multiplayer_peer() -> bool:
+	return multiplayer.multiplayer_peer != null
+
+func _is_multiplayer_server() -> bool:
+	return _has_active_multiplayer_peer() and multiplayer.is_server()
+
+func _get_local_peer_id_or_default(default_value: int = 0) -> int:
+	if not _has_active_multiplayer_peer():
+		return default_value
+	return multiplayer.get_unique_id()
+
+func _get_connected_peer_count() -> int:
+	if not _has_active_multiplayer_peer():
+		return 0
+	return multiplayer.get_peers().size()
+
 func _ready() -> void:
 	# Register current scene for reconnect routing
 	GameState.set_current_scene("lobby")
@@ -44,11 +60,11 @@ func _on_peer_changed(_peer_id: int) -> void:
 	_update_ui()
 
 func _update_player_count() -> void:
-	_player_count = 1 + multiplayer.get_peers().size()
+	_player_count = 1 + _get_connected_peer_count()
 
 func _update_ui() -> void:
 	player_label.text = "Players: %d/2" % _player_count
-	if multiplayer.is_server():
+	if _is_multiplayer_server():
 		if _player_count >= 2:
 			status_label.text = "All players connected."
 			start_button.disabled = false
@@ -63,7 +79,7 @@ func _update_ui() -> void:
 		TestHarness.on_lobby_state_changed(self)
 
 func _on_start_pressed() -> void:
-	if not multiplayer.is_server():
+	if not _is_multiplayer_server():
 		return
 	start_game.rpc()
 
@@ -109,8 +125,8 @@ func start_game_for_test() -> void:
 func get_test_snapshot() -> Dictionary:
 	return {
 		"scene": GameState.current_scene,
-		"peer_id": multiplayer.get_unique_id() if multiplayer.multiplayer_peer != null else 0,
-		"is_server": multiplayer.is_server(),
+		"peer_id": _get_local_peer_id_or_default(),
+		"is_server": _is_multiplayer_server(),
 		"local_team": GameState.local_team,
 		"local_money": GameState.local_money,
 		"map_width": GameState.map_width,

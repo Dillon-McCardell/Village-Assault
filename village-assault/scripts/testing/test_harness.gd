@@ -100,7 +100,14 @@ func on_lobby_ready(lobby: Control) -> void:
 	on_lobby_state_changed(lobby)
 
 func on_lobby_state_changed(lobby: Control) -> void:
-	if not _active or _role != ROLE_HOST or _match_started:
+	if not _active:
+		return
+	_emit_event("lobby_state_changed", {
+		"scene": SCENE_LOBBY,
+		"player_count": _get_lobby_player_count(lobby),
+		"snapshot": _capture_scene_snapshot(),
+	})
+	if _role != ROLE_HOST or _match_started:
 		return
 	if _scenario != SCENARIO_GAME_RECONNECT:
 		return
