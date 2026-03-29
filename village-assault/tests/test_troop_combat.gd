@@ -7,6 +7,7 @@ const TROOP_IDS: Array[String] = [
 	"troop_ranger",
 	"troop_brute",
 	"troop_scout",
+	"troop_miner",
 ]
 
 const TROOP_ITEM_SCRIPTS: Dictionary = {
@@ -14,6 +15,7 @@ const TROOP_ITEM_SCRIPTS: Dictionary = {
 	"troop_ranger": preload("res://scripts/shop/troops/troop_ranger.gd"),
 	"troop_brute": preload("res://scripts/shop/troops/troop_brute.gd"),
 	"troop_scout": preload("res://scripts/shop/troops/troop_scout.gd"),
+	"troop_miner": preload("res://scripts/shop/troops/troop_miner.gd"),
 }
 
 const TROOP_SCENES: Dictionary = {
@@ -21,6 +23,7 @@ const TROOP_SCENES: Dictionary = {
 	"troop_ranger": preload("res://scenes/troops/troop_ranger.tscn"),
 	"troop_brute": preload("res://scenes/troops/troop_brute.tscn"),
 	"troop_scout": preload("res://scenes/troops/troop_scout.tscn"),
+	"troop_miner": preload("res://scenes/troops/troop_miner.tscn"),
 }
 
 class CombatHarness extends Node2D:
@@ -85,6 +88,11 @@ func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 			.override_failure_message("Expected damage >= 0 for %s" % item_id)
 		assert_int(int(payload["defense"])).is_greater_equal(0)\
 			.override_failure_message("Expected defense >= 0 for %s" % item_id)
+
+	var miner := (TROOP_ITEM_SCRIPTS["troop_miner"] as GDScript).new() as ShopItem
+	assert_int(miner.health).is_equal(5)
+	assert_int(miner.damage).is_equal(1)
+	assert_int(miner.defense).is_equal(0)
 
 func test_spawn_unit_initializes_runtime_stats_from_shop_items() -> void:
 	var game_scene: PackedScene = load("res://scenes/game.tscn")
@@ -158,7 +166,7 @@ func test_game_scene_configures_multiplayer_spawner_for_troops() -> void:
 		.override_failure_message("Expected troop spawner spawn_path to target the Units node")
 
 	var spawnable_scenes := spawner.get_spawnable_scene_count()
-	assert_int(spawnable_scenes).is_greater_equal(5)\
+	assert_int(spawnable_scenes).is_greater_equal(6)\
 		.override_failure_message("Expected troop spawner to register all troop scenes and the debug test unit")
 
 	_clear_node(game)

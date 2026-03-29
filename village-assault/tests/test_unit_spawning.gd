@@ -8,6 +8,7 @@ const TROOP_ITEM_SCRIPTS: Dictionary = {
 	"troop_ranger": preload("res://scripts/shop/troops/troop_ranger.gd"),
 	"troop_brute": preload("res://scripts/shop/troops/troop_brute.gd"),
 	"troop_scout": preload("res://scripts/shop/troops/troop_scout.gd"),
+	"troop_miner": preload("res://scripts/shop/troops/troop_miner.gd"),
 }
 const DEFENSE_GATE_SCRIPT: GDScript = preload("res://scripts/shop/defense/defense_gate.gd")
 
@@ -56,6 +57,22 @@ func test_troop_purchase_deducts_money_and_enqueues_spawn_request() -> void:
 	_clear_node(game)
 	_reset_runtime_state()
 
+func test_miner_purchase_deducts_money_and_enqueues_spawn_request() -> void:
+	var game := _start_host_game()
+	var shop := _get_shop_menu(game)
+	var item := (TROOP_ITEM_SCRIPTS["troop_miner"] as GDScript).new() as ShopItem
+	var start_money := GameState.get_money_for_peer(1)
+
+	shop._process_purchase_request(1, item)
+
+	assert_int(GameState.get_money_for_peer(1)).is_equal(start_money - item.price)
+	assert_int(GameState._spawn_queue.size()).is_equal(1)
+	assert_str(GameState._spawn_queue[0]["item_id"]).is_equal("troop_miner")
+	assert_int(GameState._spawn_queue[0]["team"]).is_equal(GameState.get_team_for_peer(1))
+
+	_clear_node(game)
+	_reset_runtime_state()
+
 func test_insufficient_funds_does_not_deduct_money_or_enqueue_spawn() -> void:
 	var game := _start_host_game()
 	var shop := _get_shop_menu(game)
@@ -99,6 +116,28 @@ func test_process_spawn_queue_consumes_request_and_spawns_expected_troop() -> vo
 	assert_that(troop).is_not_null()
 	assert_str(troop.item_id).is_equal("troop_ranger")
 	assert_str(troop.get_script().resource_path).is_equal("res://scripts/troops/troop_ranger.gd")
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_process_spawn_queue_spawns_miner_with_expected_stats() -> void:
+	var game := _start_host_game()
+	GameState.enqueue_spawn({
+		"peer_id": 1,
+		"item_id": "troop_miner",
+		"team": GameState.get_team_for_peer(1),
+	})
+
+	game._process_spawn_queue()
+
+	assert_int(GameState._spawn_queue.size()).is_equal(0)
+	var troop: Node2D = game.get_unit_by_id(1)
+	assert_that(troop).is_not_null()
+	assert_str(troop.item_id).is_equal("troop_miner")
+	assert_int(troop.max_health).is_equal(5)
+	assert_int(troop.current_health).is_equal(5)
+	assert_int(troop.damage).is_equal(1)
+	assert_int(troop.defense).is_equal(0)
 
 	_clear_node(game)
 	_reset_runtime_state()
@@ -186,4 +225,26 @@ func test_spawn_queue_fifo_ordering() -> void:
 		assert_int(dequeued["team"]).is_equal(requests[index]["team"])
 
 	assert_bool(GameState.dequeue_spawn().is_empty()).is_true()
+	_reset_runtime_state()
+
+func test_shop_menu_lists_miner_under_troops_category() -> void:
+	var game := _start_host_game()
+	var shop := _get_shop_menu(game)
+
+	var troop_category_found := false
+	var miner_found := false
+	for category in shop._shop_data:
+		if category["label"] != "Troops":
+			continue
+		troop_category_found = true
+		for item in category["items"]:
+			if item is ShopItem and item.id == "troop_miner":
+				miner_found = true
+				break
+		break
+
+	assert_bool(troop_category_found).is_true()
+	assert_bool(miner_found).is_true()
+
+	_clear_node(game)
 	_reset_runtime_state()

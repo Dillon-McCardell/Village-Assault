@@ -25,12 +25,14 @@ var _troop_scenes: Dictionary = {
 	"troop_ranger": preload("res://scenes/troops/troop_ranger.tscn"),
 	"troop_brute":  preload("res://scenes/troops/troop_brute.tscn"),
 	"troop_scout":  preload("res://scenes/troops/troop_scout.tscn"),
+	"troop_miner":  preload("res://scenes/troops/troop_miner.tscn"),
 }
 var _troop_items: Dictionary = {
 	"troop_grunt": preload("res://scripts/shop/troops/troop_grunt.gd").new(),
 	"troop_ranger": preload("res://scripts/shop/troops/troop_ranger.gd").new(),
 	"troop_brute": preload("res://scripts/shop/troops/troop_brute.gd").new(),
 	"troop_scout": preload("res://scripts/shop/troops/troop_scout.gd").new(),
+	"troop_miner": preload("res://scripts/shop/troops/troop_miner.gd").new(),
 }
 var _next_unit_id: int = 1
 

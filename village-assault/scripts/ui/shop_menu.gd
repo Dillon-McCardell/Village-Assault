@@ -11,7 +11,7 @@ const ITEM_SCRIPTS: Array = [
 	preload("res://scripts/shop/troops/troop_ranger.gd"),
 	preload("res://scripts/shop/troops/troop_brute.gd"),
 	preload("res://scripts/shop/troops/troop_scout.gd"),
-	# TODO: Add the Miner troop here once resource harvesting and delivery are implemented.
+	preload("res://scripts/shop/troops/troop_miner.gd"),
 	preload("res://scripts/shop/defense/defense_gate.gd"),
 	preload("res://scripts/shop/defense/defense_stairs.gd"),
 	preload("res://scripts/shop/defense/defense_tower.gd"),
@@ -228,7 +228,6 @@ func _process_purchase_request(peer_id: int, item: ShopItem) -> void:
 	GameState.set_money_for_peer(peer_id, current_money - price)
 	item_purchased.emit(item.id, price)
 	if item.category == "Troops":
-		# TODO: Gate Miner purchases on resource-system readiness and mining-specific validation.
 		var team := GameState.get_team_for_peer(peer_id)
 		DebugConsole.log_msg("Enqueuing spawn: peer=%d item=%s team=%d" % [peer_id, item.id, team])
 		GameState.enqueue_spawn({ "peer_id": peer_id, "item_id": item.id, "team": team })
