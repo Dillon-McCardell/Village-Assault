@@ -1,0 +1,7 @@
+type(optional scope): brief subject in imperative mood
+
+Problem: Why - the specific problem being addressed.
+
+Solution: What changed and why, NOT how (how comes from the diff).
+
+Testing: How the solution was verified.

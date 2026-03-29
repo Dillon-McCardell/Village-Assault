@@ -1,0 +1,107 @@
+#!/bin/sh
+
+set -eu
+
+msg_file="$1"
+
+fail() {
+	printf '%s\n' "commit-msg: $1" >&2
+	exit 1
+}
+
+# Strip Git comments and trailing blank lines before validation.
+cleaned="$(mktemp)"
+trap 'rm -f "$cleaned"' EXIT
+awk '
+	/^[[:space:]]*#/ { next }
+	{ lines[++count] = $0 }
+	END {
+		while (count > 0 && lines[count] ~ /^[[:space:]]*$/) {
+			count--
+		}
+		for (i = 1; i <= count; i++) {
+			print lines[i]
+		}
+	}
+' "$msg_file" > "$cleaned"
+
+if [ ! -s "$cleaned" ]; then
+	fail "message is empty"
+fi
+
+subject="$(sed -n '1p' "$cleaned")"
+line2="$(sed -n '2p' "$cleaned")"
+
+case "$subject" in
+	build:*|build\(*\):*|build\!*|build\(*\)!:*|\
+	ci:*|ci\(*\):*|ci\!*|ci\(*\)!:*|\
+	chore:*|chore\(*\):*|chore\!*|chore\(*\)!:*|\
+	docs:*|docs\(*\):*|docs\!*|docs\(*\)!:*|\
+	feat:*|feat\(*\):*|feat\!*|feat\(*\)!:*|\
+	fix:*|fix\(*\):*|fix\!*|fix\(*\)!:*|\
+	perf:*|perf\(*\):*|perf\!*|perf\(*\)!:*|\
+	refactor:*|refactor\(*\):*|refactor\!*|refactor\(*\)!:*|\
+	revert:*|revert\(*\):*|revert\!*|revert\(*\)!:*|\
+	style:*|style\(*\):*|style\!*|style\(*\)!:*|\
+	test:*|test\(*\):*|test\!*|test\(*\)!:*)
+		:
+		;;
+	*)
+		fail "subject must match 'type(optional scope): subject' using an allowed type"
+		;;
+esac
+
+subject_len="$(printf '%s' "$subject" | wc -c | tr -d ' ')"
+if [ "$subject_len" -lt 20 ] || [ "$subject_len" -gt 88 ]; then
+	fail "subject must be 20-88 characters"
+fi
+
+if [ -n "${line2:-}" ]; then
+	fail "subject line must be followed by a blank line"
+fi
+
+subject_tail="${subject#*: }"
+first_subject_word="$(printf '%s' "$subject_tail" | awk '{ print tolower($1) }')"
+case "$first_subject_word" in
+	added|adding|fixed|fixing|updated|updating|implemented|implementing|refactored|refactoring|tested|testing|reverted|reverting|built|building|documented|documenting|styled|styling)
+		fail "subject should use imperative mood (for example: 'fix', not 'fixed')"
+		;;
+esac
+
+grep -qx 'Problem: .*' "$cleaned" || fail "body must contain a non-empty 'Problem:' line"
+grep -qx 'Solution: .*' "$cleaned" || fail "body must contain a non-empty 'Solution:' line"
+grep -qx 'Testing: .*' "$cleaned" || fail "body must contain a non-empty 'Testing:' line"
+
+problem_line="$(grep -n '^Problem: ' "$cleaned" | head -n1 | cut -d: -f1)"
+solution_line="$(grep -n '^Solution: ' "$cleaned" | head -n1 | cut -d: -f1)"
+testing_line="$(grep -n '^Testing: ' "$cleaned" | head -n1 | cut -d: -f1)"
+
+if [ -z "$problem_line" ] || [ -z "$solution_line" ] || [ -z "$testing_line" ]; then
+	fail "missing required body headers"
+fi
+
+if [ "$problem_line" -ge "$solution_line" ] || [ "$solution_line" -ge "$testing_line" ]; then
+	fail "'Problem:', 'Solution:', and 'Testing:' must appear in that order"
+fi
+
+if grep -Eq '^Breaking changes:|^BREAKING CHANGES:' "$cleaned"; then
+	fail "use exact 'BREAKING CHANGE:' when declaring a breaking change"
+fi
+
+has_breaking_marker=0
+printf '%s' "$subject" | grep -Eq '^[a-z]+(\([^)]+\))?!: ' && has_breaking_marker=1 || true
+has_breaking_body=0
+grep -q '^BREAKING CHANGE: ' "$cleaned" && has_breaking_body=1 || true
+
+if [ "$has_breaking_marker" -ne "$has_breaking_body" ]; then
+	fail "breaking changes require both '!' in the type and a 'BREAKING CHANGE:' body line"
+fi
+
+awk '
+	length($0) > 88 {
+		printf("commit-msg: line %d exceeds 88 characters\n", NR) > "/dev/stderr"
+		exit 1
+	}
+' "$cleaned" || exit 1
+
+exit 0

@@ -1,0 +1,45 @@
+#!/bin/sh
+
+set -eu
+
+msg_file="$1"
+commit_source="${2:-}"
+
+# Only rewrite direct message-based commits (for example, UI buttons that call
+# `git commit -m "subject"`). Leave template/editor/merge flows alone.
+if [ "$commit_source" != "message" ]; then
+	exit 0
+fi
+
+subject="$(sed -n '1p' "$msg_file")"
+line2="$(sed -n '2p' "$msg_file")"
+
+# Only expand single-line messages. If the caller already provided a body, keep it.
+if [ -n "${line2:-}" ]; then
+	exit 0
+fi
+
+# Strip the conventional-commit prefix and capitalize the remaining summary for
+# the generated body.
+subject_tail="${subject#*: }"
+if [ "$subject_tail" = "$subject" ]; then
+	exit 0
+fi
+
+capitalized_tail="$(printf '%s' "$subject_tail" | awk '{
+	if (length($0) == 0) {
+		print $0
+	} else {
+		printf("%s%s\n", toupper(substr($0, 1, 1)), substr($0, 2))
+	}
+}')"
+
+cat > "$msg_file" <<EOF
+$subject
+
+Problem: Record the reason for this change, not just the summary subject.
+
+Solution: $capitalized_tail.
+
+Testing: Not run.
+EOF
