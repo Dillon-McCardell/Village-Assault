@@ -19,14 +19,12 @@ var _target: Node2D
 var _attack_cooldown: float = 0.0
 var _territory_manager: TerritoryManager
 var _world_rect: Rect2
-var _unit_half_height: float = 8.0
 
 func _ready() -> void:
 	add_to_group("troops")
 	_territory_manager = get_tree().get_current_scene().get_node_or_null("TerritoryManager") as TerritoryManager
 	if _territory_manager:
 		_world_rect = _territory_manager.get_world_pixel_rect()
-	_unit_half_height = unit_height * 0.5
 	_snap_to_ground()
 	_update_color()
 
@@ -135,7 +133,24 @@ func take_damage(amount: int) -> void:
 func _snap_to_ground() -> void:
 	if _territory_manager == null:
 		return
-	position.y = _territory_manager.get_surface_world_y_at_x(position.x, _unit_half_height)
+	position.y = _territory_manager.get_surface_world_y_at_x(position.x, 0.0)
+
+func set_body_polygon(points: PackedVector2Array) -> void:
+	if body == null or points.is_empty():
+		return
+	body.polygon = points
+	var bounds := _get_polygon_vertical_bounds(points)
+	unit_height = bounds.y - bounds.x
+	body.position.y = -bounds.y
+	_snap_to_ground()
+
+func _get_polygon_vertical_bounds(points: PackedVector2Array) -> Vector2:
+	var min_y := points[0].y
+	var max_y := points[0].y
+	for point in points:
+		min_y = minf(min_y, point.y)
+		max_y = maxf(max_y, point.y)
+	return Vector2(min_y, max_y)
 
 func _sync_health() -> void:
 	var game: Node = get_tree().get_current_scene()
