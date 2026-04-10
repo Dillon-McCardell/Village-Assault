@@ -26,6 +26,8 @@ const TROOP_SCENES: Dictionary = {
 	"troop_miner": preload("res://scenes/troops/troop_miner.tscn"),
 }
 
+const HEALTH_BAR_WIDTH: float = 20.0
+
 class CombatHarness extends Node2D:
 	var units_root: Node2D
 
@@ -70,6 +72,10 @@ func _clear_node(node: Node) -> void:
 	if node != null and is_instance_valid(node):
 		node.queue_free()
 
+func _health_bar_fill_width(troop: Node2D) -> float:
+	var fill: ColorRect = troop.get_health_bar_fill()
+	return fill.size.x
+
 func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 	for item_id in TROOP_IDS:
 		var item := (TROOP_ITEM_SCRIPTS[item_id] as GDScript).new() as ShopItem
@@ -112,6 +118,10 @@ func test_spawn_unit_initializes_runtime_stats_from_shop_items() -> void:
 		assert_int(troop.damage).is_equal(int(payload["damage"]))
 		assert_int(troop.defense).is_equal(int(payload["defense"]))
 		assert_str(troop.item_id).is_equal(item_id)
+		assert_that(troop.get_health_bar_root()).is_not_null()\
+			.override_failure_message("Expected spawned troop for %s to create a health bar" % item_id)
+		assert_bool(troop.get_health_bar_root().visible).is_false()\
+			.override_failure_message("Expected spawned troop for %s to hide a full-health bar" % item_id)
 
 	_clear_node(game)
 
@@ -131,6 +141,10 @@ func test_spawn_test_unit_uses_grunt_stats_for_free_debug_spawn() -> void:
 	assert_int(troop.current_health).is_equal(int(grunt_payload["health"]))
 	assert_int(troop.damage).is_equal(int(grunt_payload["damage"]))
 	assert_int(troop.defense).is_equal(int(grunt_payload["defense"]))
+	assert_that(troop.get_health_bar_root()).is_not_null()\
+		.override_failure_message("Expected debug-spawned troop to create a health bar")
+	assert_bool(troop.get_health_bar_root().visible).is_false()\
+		.override_failure_message("Expected debug-spawned troop to hide a full-health bar")
 
 	_clear_node(game)
 
@@ -181,6 +195,80 @@ func test_damage_uses_flat_defense_with_minimum_one() -> void:
 
 	assert_int(target.current_health).is_equal(start_health - 1)\
 		.override_failure_message("Expected defense to reduce damage but still apply minimum 1")
+	assert_bool(target.get_health_bar_root().visible).is_true()\
+		.override_failure_message("Expected damaged troops to show a health bar")
+	assert_float(_health_bar_fill_width(target)).is_equal_approx(
+		HEALTH_BAR_WIDTH * float(target.current_health) / float(target.max_health),
+		0.01
+	)\
+		.override_failure_message("Expected health bar width to reflect remaining health")
+
+	_clear_node(harness)
+
+func test_health_bar_sync_updates_visibility_and_fill_ratio() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var troop: Node2D = harness.add_troop("troop_grunt", 1, GameState.Team.LEFT, Vector2.ZERO)
+	assert_bool(troop.get_health_bar_root().visible).is_false()\
+		.override_failure_message("Expected full-health troops to hide the health bar")
+
+	harness.sync_unit_health(1, 4)
+
+	assert_int(troop.current_health).is_equal(4)
+	assert_bool(troop.get_health_bar_root().visible).is_true()\
+		.override_failure_message("Expected synced damaged health to show the health bar")
+	assert_float(_health_bar_fill_width(troop)).is_equal_approx(HEALTH_BAR_WIDTH * 0.4, 0.01)\
+		.override_failure_message("Expected synced health bar width to match current health")
+
+	harness.sync_unit_health(1, troop.max_health)
+
+	assert_bool(troop.get_health_bar_root().visible).is_false()\
+		.override_failure_message("Expected restoring full health to hide the health bar")
+
+	_clear_node(harness)
+
+func test_health_bar_updates_when_health_properties_change_directly() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var troop: Node2D = harness.add_troop("troop_grunt", 1, GameState.Team.LEFT, Vector2.ZERO)
+
+	troop.current_health = 3
+
+	assert_bool(troop.get_health_bar_root().visible).is_true()\
+		.override_failure_message("Expected direct current_health changes to update the health bar")
+	assert_float(_health_bar_fill_width(troop)).is_equal_approx(HEALTH_BAR_WIDTH * 0.3, 0.01)\
+		.override_failure_message("Expected direct current_health changes to update the fill width")
+
+	troop.max_health = 5
+
+	assert_float(_health_bar_fill_width(troop)).is_equal_approx(HEALTH_BAR_WIDTH * 0.6, 0.01)\
+		.override_failure_message("Expected direct max_health changes to recalculate the fill width")
+
+	_clear_node(harness)
+
+func test_health_bar_stays_above_body_for_multiple_troop_sizes() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var grunt: Node2D = harness.add_troop("troop_grunt", 1, GameState.Team.LEFT, Vector2.ZERO)
+	var brute: Node2D = harness.add_troop("troop_brute", 2, GameState.Team.LEFT, Vector2(32, 0))
+	var troops: Array[Node2D] = [grunt, brute]
+
+	await get_tree().process_frame
+
+	for troop in troops:
+		var health_bar: Node2D = troop.get_health_bar_root()
+		var body: Polygon2D = troop.body
+		var top_y: float = body.position.y + body.polygon[0].y
+		for point in body.polygon:
+			top_y = minf(top_y, body.position.y + point.y)
+		assert_float(health_bar.position.y).is_less(top_y)\
+			.override_failure_message("Expected health bar for %s to sit above the body" % troop.item_id)
+
+	assert_float(brute.get_health_bar_root().position.y).is_less(grunt.get_health_bar_root().position.y)\
+		.override_failure_message("Expected taller troops to place the health bar higher than shorter troops")
 
 	_clear_node(harness)
 

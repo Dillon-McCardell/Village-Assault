@@ -16,6 +16,8 @@ var _disconnect_overlay: CanvasLayer
 var _pause_menu_scene: PackedScene = preload("res://scenes/ui/pause_menu.tscn")
 var _pause_menu: CanvasLayer
 var _local_paused: bool = false
+var _camera_anchor_initialized: bool = false
+var _anchored_team: int = GameState.Team.NONE
 ## Set to true when the remote peer sent a "leaving" RPC before disconnecting
 var _peer_left_intentionally: bool = false
 
@@ -113,11 +115,13 @@ func _update_status() -> void:
 
 func _on_local_state_updated(_team: int, _money: int) -> void:
 	_update_status()
-	_update_camera_anchor()
+	if _team != GameState.Team.NONE and (not _camera_anchor_initialized or _team != _anchored_team):
+		_update_camera_anchor()
 
 func _on_world_settings_updated(_map_width: int, _map_height: int, _map_seed: int) -> void:
 	_update_camera_limits()
-	_update_camera_anchor()
+	if GameState.local_team != GameState.Team.NONE and not _camera_anchor_initialized:
+		_update_camera_anchor()
 
 func _on_camera_zoom_changed() -> void:
 	_update_camera_limits()
@@ -126,6 +130,8 @@ func _update_camera_anchor() -> void:
 	if GameState.local_team == GameState.Team.NONE:
 		return
 	camera.position = territory_manager.get_base_anchor_world(GameState.local_team)
+	_camera_anchor_initialized = true
+	_anchored_team = GameState.local_team
 
 func _update_camera_limits() -> void:
 	var world_rect := territory_manager.get_world_pixel_rect()
