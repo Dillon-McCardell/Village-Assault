@@ -33,10 +33,14 @@ var _resolved_terrain_seed: int = 0
 
 const TERRAIN_LAYER: int = 0
 const RESOURCE_LAYER: int = 1
+const MINING_DRAFT_LAYER: int = 2
+const MINING_COMMITTED_LAYER: int = 3
 const GOLD_SEED_SALT: int = 7919
 const TILE_DIRT: Vector2i = Vector2i(0, 0)
 const TILE_GRASS: Vector2i = Vector2i(1, 0)
 const TILE_GOLD: Vector2i = Vector2i(2, 0)
+const MINING_DRAFT_ALPHA: float = 0.45
+const MINING_COMMITTED_ALPHA: float = 0.25
 
 func _ready() -> void:
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -75,6 +79,21 @@ func get_gold_tiles() -> Dictionary:
 
 func has_gold_at_tile(tile_pos: Vector2i) -> bool:
 	return _gold_tiles.has(tile_pos)
+
+func has_ground_at_tile(tile_pos: Vector2i) -> bool:
+	if tile_pos.x < 0 or tile_pos.y < 0 or tile_pos.x >= grid_width or tile_pos.y >= grid_height:
+		return false
+	return tile_map.get_cell_source_id(TERRAIN_LAYER, tile_pos) != -1
+
+func set_mining_draft_tiles(tiles: Dictionary) -> void:
+	_rebuild_mining_selection_layer(MINING_DRAFT_LAYER, tiles)
+
+func set_mining_committed_tiles(tiles: Dictionary) -> void:
+	_rebuild_mining_selection_layer(MINING_COMMITTED_LAYER, tiles)
+
+func clear_mining_selection_visuals() -> void:
+	_clear_layer_cells(MINING_DRAFT_LAYER)
+	_clear_layer_cells(MINING_COMMITTED_LAYER)
 
 # TODO: Add miner-facing reservation/depletion APIs once mining actions exist.
 # TODO: Add path-target queries for miners to request available gold nodes.
@@ -262,10 +281,14 @@ func get_surface_world_y_at_x(world_x: float, unit_half_height: float) -> float:
 	return (surface_tile_y * tile_size) - unit_half_height
 
 func _ensure_tilemap_layers() -> void:
-	while tile_map.get_layers_count() <= RESOURCE_LAYER:
+	while tile_map.get_layers_count() <= MINING_COMMITTED_LAYER:
 		tile_map.add_layer(tile_map.get_layers_count())
 	tile_map.set_layer_z_index(TERRAIN_LAYER, 0)
 	tile_map.set_layer_z_index(RESOURCE_LAYER, 1)
+	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, 2)
+	tile_map.set_layer_z_index(MINING_COMMITTED_LAYER, 3)
+	tile_map.set_layer_modulate(MINING_DRAFT_LAYER, Color(1, 1, 1, MINING_DRAFT_ALPHA))
+	tile_map.set_layer_modulate(MINING_COMMITTED_LAYER, Color(1, 1, 1, MINING_COMMITTED_ALPHA))
 
 func _ensure_tileset() -> void:
 	if tile_map.tile_set != null:
@@ -300,3 +323,14 @@ func _fill_rect(image: Image, rect: Rect2i, color: Color) -> void:
 	for x in range(rect.position.x, rect.position.x + rect.size.x):
 		for y in range(rect.position.y, rect.position.y + rect.size.y):
 			image.set_pixel(x, y, color)
+
+func _rebuild_mining_selection_layer(layer: int, tiles: Dictionary) -> void:
+	_clear_layer_cells(layer)
+	for raw_tile in tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not has_ground_at_tile(tile):
+			continue
+		tile_map.set_cell(layer, tile, 0, TILE_GOLD)
+
+func _clear_layer_cells(layer: int) -> void:
+	tile_map.clear_layer(layer)

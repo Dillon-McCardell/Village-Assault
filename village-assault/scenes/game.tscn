@@ -1,9 +1,10 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/world/territory_manager.gd" id="2"]
 [ext_resource type="Script" path="res://scripts/ui/shop_menu.gd" id="3"]
 [ext_resource type="Script" path="res://scripts/camera/camera_controller.gd" id="4"]
+[ext_resource type="Script" path="res://scripts/ui/mining_menu.gd" id="5"]
 
 [node name="Game" type="Node2D"]
 script = ExtResource("1")
@@ -44,6 +45,9 @@ offset_bottom = 80.0
 
 [node name="ShopMenu" type="Control" parent="CanvasLayer/UI"]
 script = ExtResource("3")
+
+[node name="MiningMenu" type="Control" parent="CanvasLayer/UI"]
+script = ExtResource("5")
 
 [node name="DebugLayer" type="CanvasLayer" parent="."]
 layer = 128

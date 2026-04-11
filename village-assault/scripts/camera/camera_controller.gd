@@ -5,7 +5,7 @@ signal zoom_changed
 @export var min_zoom: float = 0.5
 @export var max_zoom: float = 2.5
 @export var zoom_step: float = 0.1
-@export var drag_button: int = MOUSE_BUTTON_LEFT
+@export var drag_button: int = MOUSE_BUTTON_RIGHT
 @export var zoom_sensitivity: float = 0.1
 @export var move_speed: float = 300.0
 

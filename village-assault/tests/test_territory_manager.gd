@@ -208,3 +208,33 @@ func test_gold_tiles_regenerate_validly_after_world_settings_change() -> void:
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
+
+func test_mining_selection_layers_render_and_clear_independently() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 20, 9995)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var draft_tile := Vector2i(8, manager._get_surface_height(8))
+	var committed_tile := Vector2i(9, manager._get_surface_height(9))
+
+	manager.set_mining_draft_tiles({draft_tile: true})
+	manager.set_mining_committed_tiles({committed_tile: true})
+
+	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_DRAFT_LAYER, draft_tile)).is_equal(0)
+	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_COMMITTED_LAYER, committed_tile)).is_equal(0)
+	assert_float(manager.tile_map.get_layer_modulate(manager.MINING_DRAFT_LAYER).a).is_equal_approx(
+		manager.MINING_DRAFT_ALPHA,
+		0.001
+	)
+	assert_float(manager.tile_map.get_layer_modulate(manager.MINING_COMMITTED_LAYER).a).is_equal_approx(
+		manager.MINING_COMMITTED_ALPHA,
+		0.001
+	)
+
+	manager.clear_mining_selection_visuals()
+
+	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_DRAFT_LAYER, draft_tile)).is_equal(-1)
+	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_COMMITTED_LAYER, committed_tile)).is_equal(-1)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()

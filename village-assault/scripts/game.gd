@@ -1,6 +1,13 @@
 extends Node2D
 
 signal test_unit_spawned(unit_id: int)
+signal mining_selection_confirmed(tiles: Dictionary)
+
+enum MiningSelectionState {
+	INACTIVE,
+	SELECTING,
+	CONFIRMED,
+}
 
 @onready var units_root: Node2D = $Units
 @onready var troop_spawner: MultiplayerSpawner = $TroopSpawner
@@ -9,6 +16,7 @@ signal test_unit_spawned(unit_id: int)
 @onready var territory_manager: TerritoryManager = $TerritoryManager
 @onready var camera: Camera2D = $Camera2D
 @onready var debug_overlay: TextEdit = $DebugLayer/DebugOverlay
+@onready var mining_menu: Control = $CanvasLayer/UI/MiningMenu
 
 var _test_unit_scene: PackedScene = preload("res://scenes/test_unit.tscn")
 var _disconnect_overlay_scene: PackedScene = preload("res://scenes/ui/disconnect_overlay.tscn")
@@ -37,6 +45,12 @@ var _troop_items: Dictionary = {
 	"troop_miner": preload("res://scripts/shop/troops/troop_miner.gd").new(),
 }
 var _next_unit_id: int = 1
+var _mining_selection_state: int = MiningSelectionState.INACTIVE
+var _draft_mining_tiles: Dictionary = {}
+var _committed_mining_tiles: Dictionary = {}
+var _stroke_toggled_tiles: Dictionary = {}
+var _selection_drag_active: bool = false
+var _stroke_select_mode: Variant = null
 
 func _has_active_multiplayer_peer() -> bool:
 	return multiplayer.multiplayer_peer != null
@@ -74,16 +88,27 @@ func _ready() -> void:
 	_disconnect_overlay.return_to_menu_pressed.connect(_on_disconnect_return_to_menu)
 
 	spawn_button.pressed.connect(_on_spawn_pressed)
+	if mining_menu.has_signal("mine_mode_requested"):
+		mining_menu.mine_mode_requested.connect(enter_mining_mode)
+	if mining_menu.has_signal("confirm_pressed"):
+		mining_menu.confirm_pressed.connect(confirm_mining_selection)
+	if mining_menu.has_signal("cancel_pressed"):
+		mining_menu.cancel_pressed.connect(cancel_mining_selection)
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
 	if camera.has_signal("zoom_changed"):
 		camera.zoom_changed.connect(_on_camera_zoom_changed)
 	_update_status()
 	_update_camera_limits()
+	_refresh_mining_selection_visuals()
 	DebugConsole.set_label(debug_overlay)
 	DebugConsole.log_msg("Game ready. is_server=%s" % str(_is_multiplayer_server()))
 	if TestHarness.is_active():
 		TestHarness.on_game_ready(self)
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseButton or event is InputEventMouseMotion:
+		_handle_mining_selection_input(event)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
@@ -122,6 +147,7 @@ func _on_world_settings_updated(_map_width: int, _map_height: int, _map_seed: in
 	_update_camera_limits()
 	if GameState.local_team != GameState.Team.NONE and not _camera_anchor_initialized:
 		_update_camera_anchor()
+	_refresh_mining_selection_visuals()
 
 func _on_camera_zoom_changed() -> void:
 	_update_camera_limits()
@@ -412,3 +438,150 @@ func get_test_snapshot() -> Dictionary:
 		"disconnect_overlay_message": _disconnect_overlay.get_message_text(),
 		"visible_unit_ids": unit_ids,
 	}
+
+func enter_mining_mode() -> void:
+	_draft_mining_tiles = _committed_mining_tiles.duplicate(true)
+	_mining_selection_state = MiningSelectionState.SELECTING
+	_selection_drag_active = false
+	_stroke_toggled_tiles.clear()
+	_stroke_select_mode = null
+	DebugConsole.log_msg("Mining: enter mode committed=%d" % _committed_mining_tiles.size())
+	if mining_menu.has_method("show_confirm_state"):
+		mining_menu.show_confirm_state()
+	_refresh_mining_selection_visuals()
+
+func cancel_mining_selection() -> void:
+	_draft_mining_tiles.clear()
+	_selection_drag_active = false
+	_stroke_toggled_tiles.clear()
+	_stroke_select_mode = null
+	if _committed_mining_tiles.is_empty():
+		_mining_selection_state = MiningSelectionState.INACTIVE
+	else:
+		_mining_selection_state = MiningSelectionState.CONFIRMED
+	DebugConsole.log_msg("Mining: cancel committed=%d" % _committed_mining_tiles.size())
+	if mining_menu.has_method("show_pickaxe_state"):
+		mining_menu.show_pickaxe_state()
+	_refresh_mining_selection_visuals()
+
+func confirm_mining_selection() -> void:
+	if _draft_mining_tiles.is_empty():
+		cancel_mining_selection()
+		return
+	_committed_mining_tiles = _draft_mining_tiles.duplicate(true)
+	_draft_mining_tiles.clear()
+	_selection_drag_active = false
+	_stroke_toggled_tiles.clear()
+	_stroke_select_mode = null
+	_mining_selection_state = MiningSelectionState.CONFIRMED
+	DebugConsole.log_msg("Mining: confirm tiles=%d" % _committed_mining_tiles.size())
+	if mining_menu.has_method("show_pickaxe_state"):
+		mining_menu.show_pickaxe_state()
+	_refresh_mining_selection_visuals()
+	mining_selection_confirmed.emit(_committed_mining_tiles.duplicate(true))
+
+func toggle_draft_tile(tile: Vector2i) -> bool:
+	if _mining_selection_state != MiningSelectionState.SELECTING:
+		return false
+	if not territory_manager.has_ground_at_tile(tile):
+		return false
+	if _draft_mining_tiles.has(tile):
+		_draft_mining_tiles.erase(tile)
+		DebugConsole.log_msg("Mining: deselect tile=%s" % str(tile))
+		_refresh_mining_selection_visuals()
+		return false
+	else:
+		_draft_mining_tiles[tile] = true
+		DebugConsole.log_msg("Mining: select tile=%s" % str(tile))
+		_refresh_mining_selection_visuals()
+		return true
+
+func get_committed_mining_tiles() -> Dictionary:
+	return _committed_mining_tiles.duplicate(true)
+
+func get_draft_mining_tiles() -> Dictionary:
+	return _draft_mining_tiles.duplicate(true)
+
+func get_mining_selection_state() -> int:
+	return _mining_selection_state
+
+func world_to_screen_position(world_pos: Vector2) -> Vector2:
+	return get_viewport().get_canvas_transform() * world_pos
+
+func _handle_mining_selection_input(event: InputEvent) -> void:
+	if _mining_selection_state != MiningSelectionState.SELECTING:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			if _is_pointer_over_blocking_ui():
+				DebugConsole.log_msg("Mining: blocked by UI on press")
+				return
+			_selection_drag_active = true
+			_stroke_toggled_tiles.clear()
+			_stroke_select_mode = null
+			_apply_drag_tile_from_screen_position(event.position)
+		else:
+			_selection_drag_active = false
+			_stroke_toggled_tiles.clear()
+			_stroke_select_mode = null
+		return
+	if event is InputEventMouseMotion and _selection_drag_active:
+		if _is_pointer_over_blocking_ui():
+			DebugConsole.log_msg("Mining: blocked by UI on drag")
+			return
+		if (event.button_mask & (1 << (MOUSE_BUTTON_LEFT - 1))) == 0:
+			return
+		_apply_drag_tile_from_screen_position(event.position)
+
+func _apply_drag_tile_from_screen_position(screen_pos: Vector2) -> void:
+	var world_pos := _screen_to_world_position(screen_pos)
+	var tile := territory_manager.world_to_tile(world_pos)
+	if _stroke_toggled_tiles.has(tile):
+		return
+	if not territory_manager.has_ground_at_tile(tile):
+		DebugConsole.log_msg("Mining: no ground screen=%s world=%s tile=%s" % [str(screen_pos), str(world_pos), str(tile)])
+		return
+	_stroke_toggled_tiles[tile] = true
+	if _stroke_select_mode == null:
+		_stroke_select_mode = toggle_draft_tile(tile)
+		DebugConsole.log_msg("Mining: drag mode=%s" % ("select" if _stroke_select_mode else "deselect"))
+		return
+	if _stroke_select_mode:
+		if _draft_mining_tiles.has(tile):
+			return
+		_draft_mining_tiles[tile] = true
+		DebugConsole.log_msg("Mining: drag select tile=%s" % str(tile))
+	else:
+		if not _draft_mining_tiles.has(tile):
+			return
+		_draft_mining_tiles.erase(tile)
+		DebugConsole.log_msg("Mining: drag deselect tile=%s" % str(tile))
+	_refresh_mining_selection_visuals()
+
+func _screen_to_world_position(screen_pos: Vector2) -> Vector2:
+	return get_viewport().get_canvas_transform().affine_inverse() * screen_pos
+
+func _is_pointer_over_blocking_ui() -> bool:
+	var hovered := get_viewport().gui_get_hovered_control()
+	if hovered == null:
+		return false
+	if not hovered.is_visible_in_tree():
+		return false
+	if hovered.name == "UI":
+		return false
+	if hovered is Button or hovered is LineEdit or hovered is OptionButton or hovered is CheckBox:
+		return true
+	return hovered.mouse_filter == Control.MOUSE_FILTER_STOP
+
+func _refresh_mining_selection_visuals() -> void:
+	if territory_manager == null:
+		return
+	match _mining_selection_state:
+		MiningSelectionState.SELECTING:
+			territory_manager.set_mining_committed_tiles({})
+			territory_manager.set_mining_draft_tiles(_draft_mining_tiles)
+		MiningSelectionState.CONFIRMED:
+			territory_manager.set_mining_draft_tiles({})
+			territory_manager.set_mining_committed_tiles(_committed_mining_tiles)
+		_:
+			territory_manager.clear_mining_selection_visuals()
