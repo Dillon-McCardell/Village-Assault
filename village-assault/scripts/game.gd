@@ -1,10 +1,11 @@
 extends Node2D
 
 signal test_unit_spawned(unit_id: int)
-signal mining_selection_confirmed(tiles: Dictionary)
+signal mining_selection_confirmed(payload: Dictionary)
 
 enum MiningSelectionState {
 	INACTIVE,
+	PICKING_MINER,
 	SELECTING,
 	CONFIRMED,
 }
@@ -46,11 +47,32 @@ var _troop_items: Dictionary = {
 }
 var _next_unit_id: int = 1
 var _mining_selection_state: int = MiningSelectionState.INACTIVE
+var _selected_miner_unit_id: int = -1
 var _draft_mining_tiles: Dictionary = {}
-var _committed_mining_tiles: Dictionary = {}
+var _draft_mining_order: Array[Vector2i] = []
+var _invalid_draft_mining_tiles: Dictionary = {}
+var _miner_committed_mining_tiles: Dictionary = {}
+var _miner_committed_mining_orders: Dictionary = {}
+var _miner_colors: Dictionary = {}
 var _stroke_toggled_tiles: Dictionary = {}
 var _selection_drag_active: bool = false
 var _stroke_select_mode: Variant = null
+
+const MAX_MINERS_PER_PLAYER: int = 6
+const MINER_COLOR_PALETTE: Array[Color] = [
+	Color(0.20, 0.70, 0.90, 1.0),
+	Color(0.95, 0.45, 0.75, 1.0),
+	Color(0.90, 0.72, 0.20, 1.0),
+	Color(0.30, 0.82, 0.46, 1.0),
+	Color(0.98, 0.56, 0.24, 1.0),
+	Color(0.42, 0.62, 0.96, 1.0),
+	Color(0.18, 0.78, 0.72, 1.0),
+	Color(0.86, 0.38, 0.52, 1.0),
+	Color(0.62, 0.52, 0.92, 1.0),
+	Color(0.78, 0.84, 0.28, 1.0),
+	Color(0.94, 0.62, 0.86, 1.0),
+	Color(0.34, 0.88, 0.58, 1.0),
+]
 
 func _has_active_multiplayer_peer() -> bool:
 	return multiplayer.multiplayer_peer != null
@@ -65,6 +87,7 @@ func _get_local_peer_id_or_default(default_value: int = 0) -> int:
 
 func _physics_process(_delta: float) -> void:
 	_process_spawn_queue()
+	_prune_dead_miner_state()
 
 func _ready() -> void:
 	GameState.set_current_scene("game")
@@ -80,6 +103,7 @@ func _ready() -> void:
 
 	GameState.peer_disconnected_graceful.connect(_on_peer_disconnected_graceful)
 	GameState.peer_reconnected.connect(_on_peer_reconnected)
+	territory_manager.tile_destroyed.connect(_on_territory_tile_destroyed)
 
 	NetworkManager.server_disconnected.connect(_on_server_disconnected_game)
 	NetworkManager.reconnect_succeeded.connect(_on_reconnect_succeeded_game)
@@ -89,11 +113,14 @@ func _ready() -> void:
 
 	spawn_button.pressed.connect(_on_spawn_pressed)
 	if mining_menu.has_signal("mine_mode_requested"):
-		mining_menu.mine_mode_requested.connect(enter_mining_mode)
+		mining_menu.mine_mode_requested.connect(_on_mine_mode_requested)
 	if mining_menu.has_signal("confirm_pressed"):
 		mining_menu.confirm_pressed.connect(confirm_mining_selection)
 	if mining_menu.has_signal("cancel_pressed"):
 		mining_menu.cancel_pressed.connect(cancel_mining_selection)
+	if mining_menu.has_signal("miner_selected"):
+		mining_menu.miner_selected.connect(select_miner_for_mining)
+	_connect_picker_cancel_buttons()
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
 	if camera.has_signal("zoom_changed"):
@@ -205,6 +232,8 @@ func _process_spawn_queue() -> void:
 	if spawn_payload.is_empty():
 		DebugConsole.log_msg("DISCARD: no spawn payload for item_id '%s'" % request.get("item_id", ""))
 		return
+	if request["item_id"] == "troop_miner":
+		spawn_payload["miner_top_color"] = _generate_miner_top_color()
 	DebugConsole.log_msg("Spawning %s at %s team %d" % [request["item_id"], str(pos), team])
 	spawn_unit(pos, team, request["item_id"], _next_available_unit_id(), spawn_payload)
 
@@ -215,6 +244,8 @@ func spawn_unit(pos: Vector2, team: int, item_id: String, unit_id: int, spawn_pa
 	var unit := scene.instantiate() as Node2D
 	_initialize_spawned_unit(unit, pos, team, item_id, unit_id, spawn_payload)
 	units_root.add_child(unit)
+	if item_id == "troop_miner":
+		_register_spawned_miner(unit_id, unit, spawn_payload)
 
 func get_troop_spawn_payload(item_id: String) -> Dictionary:
 	var item = _troop_items.get(item_id)
@@ -224,6 +255,169 @@ func get_troop_spawn_payload(item_id: String) -> Dictionary:
 
 func get_unit_by_id(unit_id: int) -> Node2D:
 	return units_root.get_node_or_null("Troop_%d" % unit_id) as Node2D
+
+func get_local_miners() -> Array:
+	var miners: Array = []
+	for child in units_root.get_children():
+		if child == null or not is_instance_valid(child):
+			continue
+		if not child.has_method("get_unit_id") or not child.has_method("get_team"):
+			continue
+		if str(child.item_id) != "troop_miner":
+			continue
+		if child.get_team() != GameState.local_team:
+			continue
+		if child.has_method("is_alive") and not child.is_alive():
+			continue
+		var unit_id := int(child.get_unit_id())
+		var miner_color: Color = _miner_colors.get(unit_id, Color(0.9, 0.78, 0.24, 1.0))
+		if child.has_method("get_miner_top_color"):
+			miner_color = child.get_miner_top_color()
+			_miner_colors[unit_id] = miner_color
+		miners.append({
+			"unit_id": unit_id,
+			"color": miner_color,
+			"node": child,
+		})
+	miners.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a["unit_id"]) < int(b["unit_id"])
+	)
+	return miners
+
+func get_selected_miner_unit_id() -> int:
+	return _selected_miner_unit_id
+
+func get_current_invalid_mining_tiles() -> Dictionary:
+	return _invalid_draft_mining_tiles.duplicate(true)
+
+func get_all_committed_mining_tiles() -> Dictionary:
+	return _miner_committed_mining_tiles.duplicate(true)
+
+func _register_spawned_miner(unit_id: int, unit: Node2D, spawn_payload: Dictionary) -> void:
+	var top_color: Color = spawn_payload.get("miner_top_color", Color(0.9, 0.78, 0.24, 1.0))
+	_miner_colors[unit_id] = top_color
+	if unit.has_method("set_miner_top_color"):
+		unit.set_miner_top_color(top_color)
+	if not _miner_committed_mining_orders.has(unit_id):
+		_miner_committed_mining_orders[unit_id] = []
+	if not _miner_committed_mining_tiles.has(unit_id):
+		_miner_committed_mining_tiles[unit_id] = {}
+	if unit.has_method("set_mining_assignment"):
+		unit.set_mining_assignment(_miner_committed_mining_orders.get(unit_id, []))
+
+func _prune_dead_miner_state() -> void:
+	var live_miner_ids: Dictionary = {}
+	for miner in get_local_miners():
+		live_miner_ids[int(miner["unit_id"])] = true
+	for raw_unit_id in _miner_committed_mining_tiles.keys():
+		var unit_id := int(raw_unit_id)
+		if live_miner_ids.has(unit_id):
+			continue
+		_miner_committed_mining_tiles.erase(unit_id)
+		_miner_committed_mining_orders.erase(unit_id)
+		_miner_colors.erase(unit_id)
+		if _selected_miner_unit_id == unit_id:
+			_selected_miner_unit_id = -1
+			_draft_mining_tiles.clear()
+			_draft_mining_order.clear()
+			_invalid_draft_mining_tiles.clear()
+			_mining_selection_state = MiningSelectionState.INACTIVE
+			if mining_menu.has_method("show_pickaxe_state"):
+				mining_menu.show_pickaxe_state()
+	for miner in get_local_miners():
+		var unit_id := int(miner["unit_id"])
+		if not _miner_colors.has(unit_id):
+			_miner_colors[unit_id] = miner.get("color", Color(0.9, 0.78, 0.24, 1.0))
+	_refresh_mining_selection_visuals()
+
+func _generate_miner_top_color() -> Color:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var used_palette_indices: Dictionary = {}
+	for child in units_root.get_children():
+		if child == null or not is_instance_valid(child):
+			continue
+		if str(child.get("item_id")) != "troop_miner":
+			continue
+		var miner_color: Color = Color.WHITE
+		if child.has_method("get_miner_top_color"):
+			miner_color = child.get_miner_top_color()
+		for i in range(MINER_COLOR_PALETTE.size()):
+			if MINER_COLOR_PALETTE[i].is_equal_approx(miner_color):
+				used_palette_indices[i] = true
+				break
+	var available_indices: Array[int] = []
+	for i in range(MINER_COLOR_PALETTE.size()):
+		if not used_palette_indices.has(i):
+			available_indices.append(i)
+	if available_indices.is_empty():
+		return MINER_COLOR_PALETTE[0]
+	return MINER_COLOR_PALETTE[available_indices[rng.randi_range(0, available_indices.size() - 1)]]
+
+func _get_selected_miner_color() -> Color:
+	return _miner_colors.get(_selected_miner_unit_id, Color(1, 1, 1, TerritoryManager.MINING_DRAFT_ALPHA))
+
+func _sync_selected_miner_assignment() -> void:
+	var miner := get_unit_by_id(_selected_miner_unit_id)
+	if miner == null or not is_instance_valid(miner):
+		return
+	if miner.has_method("set_mining_assignment"):
+		miner.set_mining_assignment(_typed_tile_array(_miner_committed_mining_orders.get(_selected_miner_unit_id, [])))
+
+func _apply_miner_assignment(unit_id: int, tile_order: Array[Vector2i]) -> void:
+	var committed_tiles: Dictionary = {}
+	for tile in tile_order:
+		committed_tiles[tile] = true
+	if committed_tiles.is_empty():
+		_miner_committed_mining_tiles.erase(unit_id)
+		_miner_committed_mining_orders.erase(unit_id)
+	else:
+		_miner_committed_mining_tiles[unit_id] = committed_tiles
+		_miner_committed_mining_orders[unit_id] = tile_order.duplicate()
+	var miner := get_unit_by_id(unit_id)
+	if miner != null and is_instance_valid(miner) and miner.has_method("set_mining_assignment"):
+		miner.set_mining_assignment(tile_order)
+
+func _on_territory_tile_destroyed(tile_pos: Vector2i) -> void:
+	if not _is_multiplayer_server():
+		return
+	_sync_destroyed_tile.rpc(tile_pos.x, tile_pos.y)
+
+@rpc("authority", "reliable", "call_local")
+func _sync_destroyed_tile(tile_x: int, tile_y: int) -> void:
+	if territory_manager == null:
+		return
+	territory_manager.destroy_tile(Vector2i(tile_x, tile_y))
+
+@rpc("any_peer", "reliable")
+func _request_assign_miner_order(unit_id: int, tile_order: Array) -> void:
+	if not _is_multiplayer_server():
+		return
+	var requester_id := multiplayer.get_remote_sender_id()
+	if requester_id == 0:
+		requester_id = 1
+	var requester_team := GameState.get_team_for_peer(requester_id)
+	var miner := get_unit_by_id(unit_id)
+	if miner == null or not is_instance_valid(miner):
+		return
+	if str(miner.get("item_id")) != "troop_miner":
+		return
+	if int(miner.get("team")) != requester_team:
+		return
+	_apply_miner_assignment(unit_id, _typed_tile_array(tile_order))
+
+func _typed_tile_array(raw_tiles: Variant) -> Array[Vector2i]:
+	var typed_tiles: Array[Vector2i] = []
+	if raw_tiles is Array:
+		for raw_tile in raw_tiles:
+			typed_tiles.append(raw_tile)
+	return typed_tiles
+
+func _has_any_committed_mining_assignments() -> bool:
+	for tiles in _miner_committed_mining_tiles.values():
+		if tiles is Dictionary and not (tiles as Dictionary).is_empty():
+			return true
+	return false
 
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
@@ -282,7 +476,8 @@ func _initialize_spawned_unit(
 		unit.initialize_runtime_state(
 			int(spawn_payload.get("health", 1)),
 			int(spawn_payload.get("damage", 0)),
-			int(spawn_payload.get("defense", 0))
+			int(spawn_payload.get("defense", 0)),
+			int(spawn_payload.get("tile_damage", 0))
 		)
 	elif unit.has_method("initialize_from_spawn_payload"):
 		unit.initialize_from_spawn_payload(spawn_payload)
@@ -439,46 +634,111 @@ func get_test_snapshot() -> Dictionary:
 		"visible_unit_ids": unit_ids,
 	}
 
+func open_miner_picker() -> void:
+	_prune_dead_miner_state()
+	_selected_miner_unit_id = -1
+	_draft_mining_tiles.clear()
+	_draft_mining_order.clear()
+	_invalid_draft_mining_tiles.clear()
+	_mining_selection_state = MiningSelectionState.PICKING_MINER
+	_selection_drag_active = false
+	_stroke_toggled_tiles.clear()
+	_stroke_select_mode = null
+	if mining_menu.has_method("show_pickaxe_state"):
+		mining_menu.show_pickaxe_state()
+	if mining_menu.has_method("show_miner_picker"):
+		mining_menu.show_miner_picker(get_local_miners())
+	_refresh_mining_selection_visuals()
+
 func enter_mining_mode() -> void:
-	_draft_mining_tiles = _committed_mining_tiles.duplicate(true)
+	open_miner_picker()
+
+func _on_mine_mode_requested() -> void:
+	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
+		cancel_mining_selection()
+		return
+	open_miner_picker()
+
+func _connect_picker_cancel_buttons() -> void:
+	var mine_button := mining_menu.get_origin_button() as Button if mining_menu.has_method("get_origin_button") else null
+	var cancel_button := mining_menu.get_cancel_button() as Button if mining_menu.has_method("get_cancel_button") else null
+	for node in $CanvasLayer/UI.find_children("", "Button", true, false):
+		var button := node as Button
+		if button == null:
+			continue
+		if button == mine_button or button == cancel_button:
+			continue
+		if button.pressed.is_connected(_on_non_mining_button_pressed):
+			continue
+		button.pressed.connect(_on_non_mining_button_pressed)
+
+func _on_non_mining_button_pressed() -> void:
+	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
+		cancel_mining_selection()
+
+func select_miner_for_mining(unit_id: int) -> void:
+	var committed_tiles: Dictionary = _miner_committed_mining_tiles.get(unit_id, {})
+	_selected_miner_unit_id = unit_id
+	_draft_mining_tiles = committed_tiles.duplicate(true)
+	_draft_mining_order = _typed_tile_array(_miner_committed_mining_orders.get(unit_id, []))
+	_invalid_draft_mining_tiles = territory_manager.get_invalid_mining_selection_tiles(_draft_mining_tiles)
 	_mining_selection_state = MiningSelectionState.SELECTING
 	_selection_drag_active = false
 	_stroke_toggled_tiles.clear()
 	_stroke_select_mode = null
-	DebugConsole.log_msg("Mining: enter mode committed=%d" % _committed_mining_tiles.size())
 	if mining_menu.has_method("show_confirm_state"):
 		mining_menu.show_confirm_state()
 	_refresh_mining_selection_visuals()
 
 func cancel_mining_selection() -> void:
 	_draft_mining_tiles.clear()
+	_draft_mining_order.clear()
+	_invalid_draft_mining_tiles.clear()
 	_selection_drag_active = false
 	_stroke_toggled_tiles.clear()
 	_stroke_select_mode = null
-	if _committed_mining_tiles.is_empty():
+	_selected_miner_unit_id = -1
+	if not _has_any_committed_mining_assignments():
 		_mining_selection_state = MiningSelectionState.INACTIVE
 	else:
 		_mining_selection_state = MiningSelectionState.CONFIRMED
-	DebugConsole.log_msg("Mining: cancel committed=%d" % _committed_mining_tiles.size())
 	if mining_menu.has_method("show_pickaxe_state"):
 		mining_menu.show_pickaxe_state()
 	_refresh_mining_selection_visuals()
 
 func confirm_mining_selection() -> void:
-	if _draft_mining_tiles.is_empty():
+	if _selected_miner_unit_id == -1:
 		cancel_mining_selection()
 		return
-	_committed_mining_tiles = _draft_mining_tiles.duplicate(true)
+	for raw_tile in _invalid_draft_mining_tiles.keys():
+		var tile: Vector2i = raw_tile
+		_draft_mining_tiles.erase(tile)
+		_draft_mining_order.erase(tile)
+	var selected_unit_id := _selected_miner_unit_id
+	var committed_order := _draft_mining_order.duplicate()
+	_apply_miner_assignment(selected_unit_id, committed_order)
 	_draft_mining_tiles.clear()
+	_draft_mining_order.clear()
+	_invalid_draft_mining_tiles.clear()
 	_selection_drag_active = false
 	_stroke_toggled_tiles.clear()
 	_stroke_select_mode = null
 	_mining_selection_state = MiningSelectionState.CONFIRMED
-	DebugConsole.log_msg("Mining: confirm tiles=%d" % _committed_mining_tiles.size())
+	if _is_multiplayer_server():
+		_sync_selected_miner_assignment()
+	else:
+		_request_assign_miner_order.rpc_id(1, selected_unit_id, committed_order)
+	var committed_tiles: Dictionary = _miner_committed_mining_tiles.get(selected_unit_id, {})
+	committed_order = _miner_committed_mining_orders.get(selected_unit_id, [])
+	_selected_miner_unit_id = -1
 	if mining_menu.has_method("show_pickaxe_state"):
 		mining_menu.show_pickaxe_state()
 	_refresh_mining_selection_visuals()
-	mining_selection_confirmed.emit(_committed_mining_tiles.duplicate(true))
+	mining_selection_confirmed.emit({
+		"unit_id": selected_unit_id,
+		"tiles": committed_tiles.duplicate(true),
+		"tile_order": committed_order.duplicate(),
+	})
 
 func toggle_draft_tile(tile: Vector2i) -> bool:
 	if _mining_selection_state != MiningSelectionState.SELECTING:
@@ -487,17 +747,23 @@ func toggle_draft_tile(tile: Vector2i) -> bool:
 		return false
 	if _draft_mining_tiles.has(tile):
 		_draft_mining_tiles.erase(tile)
+		_draft_mining_order.erase(tile)
 		DebugConsole.log_msg("Mining: deselect tile=%s" % str(tile))
+		_invalid_draft_mining_tiles = territory_manager.get_invalid_mining_selection_tiles(_draft_mining_tiles)
 		_refresh_mining_selection_visuals()
 		return false
-	else:
-		_draft_mining_tiles[tile] = true
-		DebugConsole.log_msg("Mining: select tile=%s" % str(tile))
-		_refresh_mining_selection_visuals()
-		return true
+	_draft_mining_tiles[tile] = true
+	if not _draft_mining_order.has(tile):
+		_draft_mining_order.append(tile)
+	DebugConsole.log_msg("Mining: select tile=%s" % str(tile))
+	_invalid_draft_mining_tiles = territory_manager.get_invalid_mining_selection_tiles(_draft_mining_tiles)
+	_refresh_mining_selection_visuals()
+	return true
 
 func get_committed_mining_tiles() -> Dictionary:
-	return _committed_mining_tiles.duplicate(true)
+	if _selected_miner_unit_id != -1:
+		return (_miner_committed_mining_tiles.get(_selected_miner_unit_id, {}) as Dictionary).duplicate(true)
+	return {}
 
 func get_draft_mining_tiles() -> Dictionary:
 	return _draft_mining_tiles.duplicate(true)
@@ -509,6 +775,9 @@ func world_to_screen_position(world_pos: Vector2) -> Vector2:
 	return get_viewport().get_canvas_transform() * world_pos
 
 func _handle_mining_selection_input(event: InputEvent) -> void:
+	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
+		_handle_miner_picker_input(event)
+		return
 	if _mining_selection_state != MiningSelectionState.SELECTING:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -550,12 +819,16 @@ func _apply_drag_tile_from_screen_position(screen_pos: Vector2) -> void:
 		if _draft_mining_tiles.has(tile):
 			return
 		_draft_mining_tiles[tile] = true
+		if not _draft_mining_order.has(tile):
+			_draft_mining_order.append(tile)
 		DebugConsole.log_msg("Mining: drag select tile=%s" % str(tile))
 	else:
 		if not _draft_mining_tiles.has(tile):
 			return
 		_draft_mining_tiles.erase(tile)
+		_draft_mining_order.erase(tile)
 		DebugConsole.log_msg("Mining: drag deselect tile=%s" % str(tile))
+	_invalid_draft_mining_tiles = territory_manager.get_invalid_mining_selection_tiles(_draft_mining_tiles)
 	_refresh_mining_selection_visuals()
 
 func _screen_to_world_position(screen_pos: Vector2) -> Vector2:
@@ -573,15 +846,25 @@ func _is_pointer_over_blocking_ui() -> bool:
 		return true
 	return hovered.mouse_filter == Control.MOUSE_FILTER_STOP
 
+func _handle_miner_picker_input(_event: InputEvent) -> void:
+	return
+
 func _refresh_mining_selection_visuals() -> void:
 	if territory_manager == null:
 		return
+	var passive_assignments := _miner_committed_mining_tiles.duplicate(true)
+	var active_color := _get_selected_miner_color()
 	match _mining_selection_state:
 		MiningSelectionState.SELECTING:
-			territory_manager.set_mining_committed_tiles({})
-			territory_manager.set_mining_draft_tiles(_draft_mining_tiles)
-		MiningSelectionState.CONFIRMED:
+			territory_manager.clear_mining_selection_visuals()
+			territory_manager.set_mining_draft_tiles(
+				_draft_mining_tiles,
+				Color(active_color.r, active_color.g, active_color.b, territory_manager.MINING_DRAFT_ALPHA)
+			)
+			territory_manager.set_mining_invalid_tiles(_invalid_draft_mining_tiles)
+		MiningSelectionState.CONFIRMED, MiningSelectionState.PICKING_MINER:
 			territory_manager.set_mining_draft_tiles({})
-			territory_manager.set_mining_committed_tiles(_committed_mining_tiles)
+			territory_manager.set_mining_invalid_tiles({})
+			territory_manager.set_passive_mining_assignments(passive_assignments, _miner_colors)
 		_:
 			territory_manager.clear_mining_selection_visuals()

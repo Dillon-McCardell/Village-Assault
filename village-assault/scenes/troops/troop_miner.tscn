@@ -11,6 +11,10 @@ script = ExtResource("1")
 color = Color(1, 0.7, 0.2, 1)
 polygon = PackedVector2Array(-8, -10, 8, -10, 8, 10, -8, 10)
 
+[node name="TopBody" type="Polygon2D" parent="."]
+color = Color(0.9, 0.78, 0.24, 1)
+polygon = PackedVector2Array(-8, -10, 8, -10, 8, 0, -8, 0)
+
 [node name="HealthBar" type="Node2D" parent="."]
 visible = false
 

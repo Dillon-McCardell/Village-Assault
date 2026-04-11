@@ -8,3 +8,4 @@ func _init() -> void:
 	health = 5
 	damage = 1
 	defense = 0
+	tile_damage = 1

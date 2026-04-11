@@ -32,6 +32,7 @@ var _current_health: int = 1
 		return _current_health
 @export var damage: int = 0
 @export var defense: int = 0
+@export var tile_damage: int = 0
 
 const HEALTH_BAR_WIDTH: float = 20.0
 const HEALTH_BAR_HEIGHT: float = 4.0
@@ -110,14 +111,16 @@ func initialize_from_spawn_payload(spawn_payload: Dictionary) -> void:
 	initialize_runtime_state(
 		max(1, int(spawn_payload.get("health", 1))),
 		max(0, int(spawn_payload.get("damage", 0))),
-		max(0, int(spawn_payload.get("defense", 0)))
+		max(0, int(spawn_payload.get("defense", 0))),
+		max(0, int(spawn_payload.get("tile_damage", 0)))
 	)
 
-func initialize_runtime_state(health: int, damage_value: int, defense_value: int) -> void:
+func initialize_runtime_state(health: int, damage_value: int, defense_value: int, tile_damage_value: int = 0) -> void:
 	max_health = max(1, health)
 	current_health = max_health
 	damage = max(0, damage_value)
 	defense = max(0, defense_value)
+	tile_damage = max(0, tile_damage_value)
 
 func sync_current_health(value: int) -> void:
 	current_health = value
@@ -303,6 +306,7 @@ func _configure_synchronizer() -> void:
 	_add_replicated_property(config, NodePath(":current_health"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	_add_replicated_property(config, NodePath(":damage"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	_add_replicated_property(config, NodePath(":defense"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":tile_damage"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	synchronizer.replication_config = config
 
 func _add_replicated_property(

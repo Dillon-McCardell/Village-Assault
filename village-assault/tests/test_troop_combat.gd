@@ -87,6 +87,8 @@ func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 			.override_failure_message("Expected spawn payload for %s to include damage" % item_id)
 		assert_bool(payload.has("defense")).is_true()\
 			.override_failure_message("Expected spawn payload for %s to include defense" % item_id)
+		assert_bool(payload.has("tile_damage")).is_true()\
+			.override_failure_message("Expected spawn payload for %s to include tile_damage" % item_id)
 
 		assert_int(int(payload["health"])).is_greater(0)\
 			.override_failure_message("Expected health > 0 for %s" % item_id)
@@ -94,11 +96,14 @@ func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 			.override_failure_message("Expected damage >= 0 for %s" % item_id)
 		assert_int(int(payload["defense"])).is_greater_equal(0)\
 			.override_failure_message("Expected defense >= 0 for %s" % item_id)
+		assert_int(int(payload["tile_damage"])).is_greater_equal(0)\
+			.override_failure_message("Expected tile_damage >= 0 for %s" % item_id)
 
 	var miner := (TROOP_ITEM_SCRIPTS["troop_miner"] as GDScript).new() as ShopItem
 	assert_int(miner.health).is_equal(5)
 	assert_int(miner.damage).is_equal(1)
 	assert_int(miner.defense).is_equal(0)
+	assert_int(miner.tile_damage).is_equal(1)
 
 func test_spawn_unit_initializes_runtime_stats_from_shop_items() -> void:
 	var game_scene: PackedScene = load("res://scenes/game.tscn")
@@ -117,6 +122,7 @@ func test_spawn_unit_initializes_runtime_stats_from_shop_items() -> void:
 		assert_int(troop.current_health).is_equal(int(payload["health"]))
 		assert_int(troop.damage).is_equal(int(payload["damage"]))
 		assert_int(troop.defense).is_equal(int(payload["defense"]))
+		assert_int(troop.tile_damage).is_equal(int(payload["tile_damage"]))
 		assert_str(troop.item_id).is_equal(item_id)
 		assert_that(troop.get_health_bar_root()).is_not_null()\
 			.override_failure_message("Expected spawned troop for %s to create a health bar" % item_id)
@@ -141,6 +147,7 @@ func test_spawn_test_unit_uses_grunt_stats_for_free_debug_spawn() -> void:
 	assert_int(troop.current_health).is_equal(int(grunt_payload["health"]))
 	assert_int(troop.damage).is_equal(int(grunt_payload["damage"]))
 	assert_int(troop.defense).is_equal(int(grunt_payload["defense"]))
+	assert_int(troop.tile_damage).is_equal(int(grunt_payload["tile_damage"]))
 	assert_that(troop.get_health_bar_root()).is_not_null()\
 		.override_failure_message("Expected debug-spawned troop to create a health bar")
 	assert_bool(troop.get_health_bar_root().visible).is_false()\
@@ -314,3 +321,75 @@ func test_friendly_troops_do_not_attack_each_other() -> void:
 		.override_failure_message("Expected friendly troops to keep marching instead of attacking")
 
 	_clear_node(harness)
+
+func test_miners_spawn_idle_with_non_red_top_color() -> void:
+	var game_scene: PackedScene = load("res://scenes/game.tscn")
+	var game: Node = game_scene.instantiate()
+	_mount_node(game)
+
+	var payload: Dictionary = game.get_troop_spawn_payload("troop_miner")
+	payload["miner_top_color"] = Color(0.2, 0.7, 0.9, 1.0)
+	game.spawn_unit(Vector2.ZERO, GameState.Team.LEFT, "troop_miner", 1, payload)
+
+	var miner: Node2D = game.get_unit_by_id(1)
+	assert_that(miner).is_not_null()
+	var start_position: Vector2 = miner.position
+	miner._physics_process(0.5)
+	assert_vector(miner.position).is_equal(start_position)
+	assert_int(miner.tile_damage).is_equal(1)
+	var top_color: Color = miner.get_miner_top_color()
+	assert_float(top_color.r).is_equal_approx(0.2, 0.001)
+	assert_float(top_color.g).is_equal_approx(0.7, 0.001)
+	assert_float(top_color.b).is_equal_approx(0.9, 0.001)
+
+	_clear_node(game)
+
+func test_miner_top_half_visual_updates_when_color_changes_after_spawn() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var miner: Node2D = harness.add_troop("troop_miner", 1, GameState.Team.LEFT, Vector2.ZERO)
+	var top_body := miner.get_node("TopBody") as Polygon2D
+
+	miner.miner_top_color = Color(0.15, 0.8, 0.95, 1.0)
+
+	assert_float(top_body.color.r).is_equal_approx(0.15, 0.001)
+	assert_float(top_body.color.g).is_equal_approx(0.8, 0.001)
+	assert_float(top_body.color.b).is_equal_approx(0.95, 0.001)
+
+	_clear_node(harness)
+
+func test_spawned_miners_can_have_distinct_top_colors() -> void:
+	var game_scene: PackedScene = load("res://scenes/game.tscn")
+	var game: Node = game_scene.instantiate()
+	_mount_node(game)
+
+	var first_payload: Dictionary = game.get_troop_spawn_payload("troop_miner")
+	first_payload["miner_top_color"] = Color(0.2, 0.7, 0.9, 1.0)
+	game.spawn_unit(Vector2.ZERO, GameState.Team.LEFT, "troop_miner", 1, first_payload)
+
+	var second_payload: Dictionary = game.get_troop_spawn_payload("troop_miner")
+	second_payload["miner_top_color"] = Color(0.9, 0.7, 0.2, 1.0)
+	game.spawn_unit(Vector2(32, 0), GameState.Team.LEFT, "troop_miner", 2, second_payload)
+
+	var first: Node2D = game.get_unit_by_id(1)
+	var second: Node2D = game.get_unit_by_id(2)
+	assert_bool(first.get_miner_top_color().is_equal_approx(second.get_miner_top_color())).is_false()
+
+	_clear_node(game)
+
+func test_generated_miner_colors_come_from_fixed_palette() -> void:
+	var game_scene: PackedScene = load("res://scenes/game.tscn")
+	var game: Node = game_scene.instantiate()
+	_mount_node(game)
+
+	for _i in range(6):
+		var generated: Color = game._generate_miner_top_color()
+		var found := false
+		for palette_color in game.MINER_COLOR_PALETTE:
+			if palette_color.is_equal_approx(generated):
+				found = true
+				break
+		assert_bool(found).is_true()
+
+	_clear_node(game)

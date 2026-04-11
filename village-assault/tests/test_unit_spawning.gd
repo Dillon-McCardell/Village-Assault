@@ -138,6 +138,7 @@ func test_process_spawn_queue_spawns_miner_with_expected_stats() -> void:
 	assert_int(troop.current_health).is_equal(5)
 	assert_int(troop.damage).is_equal(1)
 	assert_int(troop.defense).is_equal(0)
+	assert_int(troop.tile_damage).is_equal(1)
 
 	_clear_node(game)
 	_reset_runtime_state()
@@ -245,6 +246,28 @@ func test_shop_menu_lists_miner_under_troops_category() -> void:
 
 	assert_bool(troop_category_found).is_true()
 	assert_bool(miner_found).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_miner_purchase_is_blocked_after_six_owned_or_queued_miners() -> void:
+	var game := _start_host_game()
+	var shop := _get_shop_menu(game)
+	var item := (TROOP_ITEM_SCRIPTS["troop_miner"] as GDScript).new() as ShopItem
+
+	for i in range(5):
+		game.spawn_unit(Vector2(32 * i, 0), GameState.Team.LEFT, "troop_miner", i + 1, item.get_spawn_payload())
+	GameState.enqueue_spawn({
+		"peer_id": 1,
+		"item_id": "troop_miner",
+		"team": GameState.get_team_for_peer(1),
+	})
+	var start_money := GameState.get_money_for_peer(1)
+
+	shop._process_purchase_request(1, item)
+
+	assert_int(GameState.get_money_for_peer(1)).is_equal(start_money)
+	assert_int(GameState._spawn_queue.size()).is_equal(1)
 
 	_clear_node(game)
 	_reset_runtime_state()

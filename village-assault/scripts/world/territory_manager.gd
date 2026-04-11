@@ -1,6 +1,8 @@
 extends Node2D
 class_name TerritoryManager
 
+signal tile_destroyed(tile_pos: Vector2i)
+
 @export var grid_width: int = 64
 @export var grid_height: int = 20
 @export var tile_size: int = 16
@@ -29,18 +31,28 @@ var _spawn_offsets: Dictionary = {
 
 var _heightmap: Array[int] = []
 var _gold_tiles: Dictionary = {}
+var _tile_health: Dictionary = {}
 var _resolved_terrain_seed: int = 0
 
+const MAX_MINER_OVERLAY_LAYERS: int = 6
+const TILE_HEALTH_DEFAULT: int = 2
 const TERRAIN_LAYER: int = 0
 const RESOURCE_LAYER: int = 1
-const MINING_DRAFT_LAYER: int = 2
-const MINING_COMMITTED_LAYER: int = 3
+const UNDERGROUND_LAYER: int = 2
+const MINING_DRAFT_LAYER: int = 3
+const MINING_INVALID_LAYER: int = 4
+const MINING_COMMITTED_LAYER_START: int = 5
+const MINING_COMMITTED_LAYER: int = MINING_COMMITTED_LAYER_START
+const MINING_COMMITTED_LAYER_END: int = MINING_COMMITTED_LAYER_START + MAX_MINER_OVERLAY_LAYERS - 1
 const GOLD_SEED_SALT: int = 7919
 const TILE_DIRT: Vector2i = Vector2i(0, 0)
 const TILE_GRASS: Vector2i = Vector2i(1, 0)
 const TILE_GOLD: Vector2i = Vector2i(2, 0)
+const TILE_UNDERGROUND: Vector2i = Vector2i(3, 0)
 const MINING_DRAFT_ALPHA: float = 0.45
 const MINING_COMMITTED_ALPHA: float = 0.25
+const MINING_INVALID_COLOR: Color = Color(0.86, 0.18, 0.18, 0.75)
+const UNDERGROUND_COLOR: Color = Color(0.27, 0.16, 0.08, 1.0)
 
 func _ready() -> void:
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -81,23 +93,303 @@ func has_gold_at_tile(tile_pos: Vector2i) -> bool:
 	return _gold_tiles.has(tile_pos)
 
 func has_ground_at_tile(tile_pos: Vector2i) -> bool:
-	if tile_pos.x < 0 or tile_pos.y < 0 or tile_pos.x >= grid_width or tile_pos.y >= grid_height:
+	if not is_tile_in_bounds(tile_pos):
 		return false
 	return tile_map.get_cell_source_id(TERRAIN_LAYER, tile_pos) != -1
 
-func set_mining_draft_tiles(tiles: Dictionary) -> void:
-	_rebuild_mining_selection_layer(MINING_DRAFT_LAYER, tiles)
+func is_underground_tile(tile_pos: Vector2i) -> bool:
+	if not is_tile_in_bounds(tile_pos):
+		return false
+	return tile_map.get_cell_source_id(UNDERGROUND_LAYER, tile_pos) != -1
 
-func set_mining_committed_tiles(tiles: Dictionary) -> void:
-	_rebuild_mining_selection_layer(MINING_COMMITTED_LAYER, tiles)
+func is_walkable_air_tile(tile_pos: Vector2i) -> bool:
+	return is_tile_in_bounds(tile_pos) and not has_ground_at_tile(tile_pos)
+
+func is_tile_in_bounds(tile_pos: Vector2i) -> bool:
+	return tile_pos.x >= 0 and tile_pos.y >= 0 and tile_pos.x < grid_width and tile_pos.y < grid_height
+
+func get_tile_health(tile_pos: Vector2i) -> int:
+	return int(_tile_health.get(tile_pos, 0))
+
+func set_mining_draft_tiles(tiles: Dictionary, color: Color = Color(1, 1, 1, MINING_DRAFT_ALPHA)) -> void:
+	_rebuild_overlay_layer(MINING_DRAFT_LAYER, tiles, color)
+
+func set_mining_invalid_tiles(tiles: Dictionary) -> void:
+	_rebuild_overlay_layer(MINING_INVALID_LAYER, tiles, MINING_INVALID_COLOR)
+
+func set_mining_committed_tiles(tiles: Dictionary, color: Color = Color(1, 1, 1, MINING_COMMITTED_ALPHA)) -> void:
+	_rebuild_overlay_layer(MINING_COMMITTED_LAYER_START, tiles, color)
+
+func set_passive_mining_assignments(assignments: Dictionary, colors: Dictionary) -> void:
+	for layer in range(MINING_COMMITTED_LAYER_START, MINING_COMMITTED_LAYER_END + 1):
+		_clear_layer_cells(layer)
+	var unit_ids: Array[int] = []
+	for raw_unit_id in assignments.keys():
+		unit_ids.append(int(raw_unit_id))
+	unit_ids.sort()
+	for i in range(min(unit_ids.size(), MAX_MINER_OVERLAY_LAYERS)):
+		var unit_id := unit_ids[i]
+		var tiles: Dictionary = assignments.get(unit_id, {})
+		var base_color: Color = colors.get(unit_id, Color(1, 1, 1, 1))
+		var color := Color(base_color.r, base_color.g, base_color.b, MINING_COMMITTED_ALPHA)
+		_rebuild_overlay_layer(MINING_COMMITTED_LAYER_START + i, tiles, color)
 
 func clear_mining_selection_visuals() -> void:
 	_clear_layer_cells(MINING_DRAFT_LAYER)
-	_clear_layer_cells(MINING_COMMITTED_LAYER)
+	_clear_layer_cells(MINING_INVALID_LAYER)
+	for layer in range(MINING_COMMITTED_LAYER_START, MINING_COMMITTED_LAYER_END + 1):
+		_clear_layer_cells(layer)
 
-# TODO: Add miner-facing reservation/depletion APIs once mining actions exist.
-# TODO: Add path-target queries for miners to request available gold nodes.
-# TODO: Track depleted nodes separately once mined and returned gold affects money.
+func get_invalid_mining_selection_tiles(selected_tiles: Dictionary) -> Dictionary:
+	var valid_tiles := _get_air_connected_selected_tiles(selected_tiles)
+	var invalid_tiles: Dictionary = {}
+	for raw_tile in selected_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not valid_tiles.has(tile):
+			invalid_tiles[tile] = true
+	return invalid_tiles
+
+func find_path_to_any_walkable_tile(start_tile: Vector2i, goal_tiles: Array[Vector2i]) -> Array[Vector2i]:
+	if not is_walkable_air_tile(start_tile):
+		return []
+	if goal_tiles.is_empty():
+		return []
+	var goal_lookup: Dictionary = {}
+	for tile in goal_tiles:
+		if is_walkable_air_tile(tile):
+			goal_lookup[tile] = true
+	if goal_lookup.is_empty():
+		return []
+	if goal_lookup.has(start_tile):
+		return [start_tile]
+	var frontier: Array[Vector2i] = [start_tile]
+	var visited: Dictionary = {start_tile: true}
+	var previous: Dictionary = {}
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		for neighbor in get_orthogonal_neighbors(current):
+			if not is_walkable_air_tile(neighbor):
+				continue
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			previous[neighbor] = current
+			if goal_lookup.has(neighbor):
+				return _reconstruct_path(previous, start_tile, neighbor)
+			frontier.append(neighbor)
+	return []
+
+func get_orthogonal_neighbors(tile: Vector2i) -> Array[Vector2i]:
+	var neighbors: Array[Vector2i] = []
+	var candidates: Array[Vector2i] = [
+		tile + Vector2i.LEFT,
+		tile + Vector2i.RIGHT,
+		tile + Vector2i.UP,
+		tile + Vector2i.DOWN,
+	]
+	for candidate in candidates:
+		if is_tile_in_bounds(candidate):
+			neighbors.append(candidate)
+	return neighbors
+
+func get_adjacent_walkable_tiles(tile: Vector2i) -> Array[Vector2i]:
+	var walkable: Array[Vector2i] = []
+	for neighbor in get_orthogonal_neighbors(tile):
+		if is_walkable_air_tile(neighbor):
+			walkable.append(neighbor)
+	return walkable
+
+func get_miner_attack_tiles(tile: Vector2i) -> Array[Vector2i]:
+	var attack_tiles: Array[Vector2i] = []
+	for neighbor in get_orthogonal_neighbors(tile):
+		if is_walkable_air_tile(neighbor):
+			attack_tiles.append(neighbor)
+	var diagonals: Array[Vector2i] = [
+		Vector2i(-1, -1),
+		Vector2i(1, -1),
+		Vector2i(-1, 1),
+		Vector2i(1, 1),
+	]
+	for diagonal in diagonals:
+		var attack_tile: Vector2i = tile + diagonal
+		if not is_walkable_air_tile(attack_tile):
+			continue
+		var shared_horizontal: Vector2i = tile + Vector2i(diagonal.x, 0)
+		var shared_vertical: Vector2i = tile + Vector2i(0, diagonal.y)
+		if is_walkable_air_tile(shared_horizontal) or is_walkable_air_tile(shared_vertical):
+			attack_tiles.append(attack_tile)
+	return attack_tiles
+
+func is_standable_tile(tile_pos: Vector2i) -> bool:
+	if not is_tile_in_bounds(tile_pos):
+		return false
+	if has_ground_at_tile(tile_pos):
+		return false
+	var support_tile := tile_pos + Vector2i.DOWN
+	if not is_tile_in_bounds(support_tile):
+		return false
+	return has_ground_at_tile(support_tile)
+
+func stand_tile_to_world_position(tile_pos: Vector2i) -> Vector2:
+	return Vector2((tile_pos.x + 0.5) * tile_size, (tile_pos.y + 1.0) * tile_size)
+
+func get_stand_surface_world_y_at_x(world_x: float, reference_world_y: float) -> float:
+	var tile_x: int = int(clamp(int(floor(world_x / tile_size)), 0, grid_width - 1))
+	var best_y: float = reference_world_y
+	var best_distance: float = INF
+	for tile_y in range(grid_height):
+		var candidate := Vector2i(tile_x, tile_y)
+		if not is_standable_tile(candidate):
+			continue
+		var candidate_y: float = stand_tile_to_world_position(candidate).y
+		var distance_to_reference: float = absf(candidate_y - reference_world_y)
+		if distance_to_reference < best_distance:
+			best_distance = distance_to_reference
+			best_y = candidate_y
+	return best_y
+
+func get_standable_tile_for_world_position(world_pos: Vector2) -> Vector2i:
+	var base_tile := world_to_tile(world_pos)
+	var candidates: Array[Vector2i] = [
+		base_tile,
+		base_tile + Vector2i.UP,
+		base_tile + Vector2i.DOWN,
+		base_tile + Vector2i.LEFT,
+		base_tile + Vector2i.RIGHT,
+		base_tile + Vector2i(-1, -1),
+		base_tile + Vector2i(1, -1),
+		base_tile + Vector2i(-1, 1),
+		base_tile + Vector2i(1, 1),
+	]
+	for candidate in candidates:
+		if is_standable_tile(candidate):
+			return candidate
+	return Vector2i(-1, -1)
+
+func get_miner_walk_neighbors(tile: Vector2i) -> Array[Vector2i]:
+	var neighbors: Array[Vector2i] = []
+	var lateral_directions: Array[Vector2i] = [Vector2i.LEFT, Vector2i.RIGHT]
+	var fall_distances: Array[int] = [1, 2]
+	for direction in lateral_directions:
+		var same_level: Vector2i = tile + direction
+		if is_standable_tile(same_level):
+			neighbors.append(same_level)
+		var climb: Vector2i = tile + direction + Vector2i.UP
+		if is_standable_tile(climb):
+			neighbors.append(climb)
+		for fall_distance in fall_distances:
+			var fall: Vector2i = tile + direction + Vector2i.DOWN * fall_distance
+			if not is_standable_tile(fall):
+				continue
+			var clear_fall := true
+			for step in range(1, fall_distance + 1):
+				if has_ground_at_tile(tile + direction + Vector2i.DOWN * step):
+					clear_fall = false
+					break
+			if clear_fall:
+				neighbors.append(fall)
+	for drop_distance in fall_distances:
+		var drop: Vector2i = tile + Vector2i.DOWN * drop_distance
+		if not is_standable_tile(drop):
+			continue
+		var clear_drop := true
+		for step in range(1, drop_distance + 1):
+			if has_ground_at_tile(tile + Vector2i.DOWN * step):
+				clear_drop = false
+				break
+		if clear_drop:
+			neighbors.append(drop)
+	return neighbors
+
+func get_air_tile_for_world_position(world_pos: Vector2) -> Vector2i:
+	var tile := world_to_tile(world_pos)
+	if is_walkable_air_tile(tile):
+		return tile
+	var above := tile + Vector2i.UP
+	if is_walkable_air_tile(above):
+		return above
+	var below := tile + Vector2i.DOWN
+	if is_walkable_air_tile(below):
+		return below
+	for neighbor in get_orthogonal_neighbors(tile):
+		if is_walkable_air_tile(neighbor):
+			return neighbor
+	return above
+
+func find_miner_path(start_tile: Vector2i, goal_tiles: Array[Vector2i]) -> Array[Vector2i]:
+	if not is_standable_tile(start_tile):
+		return []
+	if goal_tiles.is_empty():
+		return []
+	var goal_lookup: Dictionary = {}
+	for tile in goal_tiles:
+		if is_standable_tile(tile):
+			goal_lookup[tile] = true
+	if goal_lookup.is_empty():
+		return []
+	if goal_lookup.has(start_tile):
+		return [start_tile]
+	var frontier: Array[Vector2i] = [start_tile]
+	var visited: Dictionary = {start_tile: true}
+	var previous: Dictionary = {}
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		for neighbor in get_miner_walk_neighbors(current):
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			previous[neighbor] = current
+			if goal_lookup.has(neighbor):
+				return _reconstruct_path(previous, start_tile, neighbor)
+			frontier.append(neighbor)
+	return []
+
+func apply_tile_damage(tile_pos: Vector2i, amount: int) -> bool:
+	if amount <= 0:
+		return false
+	if not has_ground_at_tile(tile_pos):
+		return false
+	var remaining_health: int = max(0, get_tile_health(tile_pos) - amount)
+	if remaining_health <= 0:
+		destroy_tile(tile_pos)
+		return true
+	_tile_health[tile_pos] = remaining_health
+	return false
+
+func destroy_tile(tile_pos: Vector2i) -> void:
+	if not has_ground_at_tile(tile_pos):
+		return
+	tile_map.erase_cell(TERRAIN_LAYER, tile_pos)
+	tile_map.erase_cell(RESOURCE_LAYER, tile_pos)
+	tile_map.set_cell(UNDERGROUND_LAYER, tile_pos, 0, TILE_UNDERGROUND)
+	_gold_tiles.erase(tile_pos)
+	_tile_health.erase(tile_pos)
+	tile_destroyed.emit(tile_pos)
+
+func get_base_anchor_world(team: int) -> Vector2:
+	var flat_width: int = _get_flat_width()
+	var center_x: int = 0
+	match team:
+		GameState.Team.RIGHT:
+			center_x = grid_width - 1 - int(floor(flat_width / 2.0))
+		_:
+			center_x = int(floor(flat_width / 2.0))
+	var surface_y: int = _get_surface_height(center_x)
+	var camera_tile := Vector2i(center_x, clamp(surface_y - 2, 0, grid_height - 1))
+	return tile_to_world_center(camera_tile)
+
+func get_world_pixel_rect() -> Rect2:
+	var width: float = grid_width * tile_size
+	var height: float = grid_height * tile_size
+	return Rect2(0.0, 0.0, width, height)
+
+func get_surface_tile_y_at_x(world_x: float) -> int:
+	var tile_x: int = int(clamp(int(floor(world_x / tile_size)), 0, grid_width - 1))
+	return _get_surface_height(tile_x)
+
+func get_surface_world_y_at_x(world_x: float, unit_half_height: float) -> float:
+	var surface_tile_y: int = get_surface_tile_y_at_x(world_x)
+	return (surface_tile_y * tile_size) - unit_half_height
 
 func _get_team_bounds(team: int) -> Rect2i:
 	var left_width: int = int(max(1, int(round(grid_width * left_territory_ratio))))
@@ -114,6 +406,7 @@ func _build_terrain() -> void:
 	_resolved_terrain_seed = _resolve_terrain_seed()
 	_heightmap = _generate_heightmap(_resolved_terrain_seed)
 	_gold_tiles = _generate_gold_tiles(_resolved_terrain_seed)
+	_tile_health.clear()
 	tile_map.clear()
 	for x in range(grid_width):
 		var surface_y: int = _get_surface_height(x)
@@ -121,10 +414,13 @@ func _build_terrain() -> void:
 			var atlas_coords := TILE_DIRT
 			if y == surface_y:
 				atlas_coords = TILE_GRASS
-			tile_map.set_cell(TERRAIN_LAYER, Vector2i(x, y), 0, atlas_coords)
+			var tile := Vector2i(x, y)
+			tile_map.set_cell(TERRAIN_LAYER, tile, 0, atlas_coords)
+			_tile_health[tile] = TILE_HEALTH_DEFAULT
 	for raw_tile in _gold_tiles.keys():
 		var tile: Vector2i = raw_tile
 		tile_map.set_cell(RESOURCE_LAYER, tile, 0, TILE_GOLD)
+	clear_mining_selection_visuals()
 
 func _generate_heightmap(terrain_seed_value: int) -> Array[int]:
 	var heights: Array[int] = []
@@ -255,49 +551,34 @@ func _can_place_gold_at(tile: Vector2i, gold_tiles: Dictionary) -> bool:
 					return false
 	return true
 
-func get_base_anchor_world(team: int) -> Vector2:
-	var flat_width: int = _get_flat_width()
-	var center_x: int = 0
-	match team:
-		GameState.Team.RIGHT:
-			center_x = grid_width - 1 - int(floor(flat_width / 2.0))
-		_:
-			center_x = int(floor(flat_width / 2.0))
-	var surface_y: int = _get_surface_height(center_x)
-	var camera_tile := Vector2i(center_x, clamp(surface_y - 2, 0, grid_height - 1))
-	return tile_to_world_center(camera_tile)
-
-func get_world_pixel_rect() -> Rect2:
-	var width: float = grid_width * tile_size
-	var height: float = grid_height * tile_size
-	return Rect2(0.0, 0.0, width, height)
-
-func get_surface_tile_y_at_x(world_x: float) -> int:
-	var tile_x: int = int(clamp(int(floor(world_x / tile_size)), 0, grid_width - 1))
-	return _get_surface_height(tile_x)
-
-func get_surface_world_y_at_x(world_x: float, unit_half_height: float) -> float:
-	var surface_tile_y: int = get_surface_tile_y_at_x(world_x)
-	return (surface_tile_y * tile_size) - unit_half_height
-
 func _ensure_tilemap_layers() -> void:
-	while tile_map.get_layers_count() <= MINING_COMMITTED_LAYER:
+	tile_map.z_index = -10
+	while tile_map.get_layers_count() <= MINING_COMMITTED_LAYER_END:
 		tile_map.add_layer(tile_map.get_layers_count())
 	tile_map.set_layer_z_index(TERRAIN_LAYER, 0)
 	tile_map.set_layer_z_index(RESOURCE_LAYER, 1)
-	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, 2)
-	tile_map.set_layer_z_index(MINING_COMMITTED_LAYER, 3)
+	tile_map.set_layer_z_index(UNDERGROUND_LAYER, 2)
+	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, 3)
+	tile_map.set_layer_z_index(MINING_INVALID_LAYER, 4)
+	for i in range(MAX_MINER_OVERLAY_LAYERS):
+		tile_map.set_layer_z_index(MINING_COMMITTED_LAYER_START + i, 5 + i)
 	tile_map.set_layer_modulate(MINING_DRAFT_LAYER, Color(1, 1, 1, MINING_DRAFT_ALPHA))
-	tile_map.set_layer_modulate(MINING_COMMITTED_LAYER, Color(1, 1, 1, MINING_COMMITTED_ALPHA))
+	tile_map.set_layer_modulate(MINING_INVALID_LAYER, MINING_INVALID_COLOR)
+	for i in range(MAX_MINER_OVERLAY_LAYERS):
+		tile_map.set_layer_modulate(
+			MINING_COMMITTED_LAYER_START + i,
+			Color(1, 1, 1, MINING_COMMITTED_ALPHA)
+		)
 
 func _ensure_tileset() -> void:
 	if tile_map.tile_set != null:
 		return
-	var image := Image.create(tile_size * 3, tile_size, false, Image.FORMAT_RGBA8)
+	var image := Image.create(tile_size * 4, tile_size, false, Image.FORMAT_RGBA8)
 	image.fill(Color(0, 0, 0, 0))
 	_fill_rect(image, Rect2i(0, 0, tile_size, tile_size), Color(0.45, 0.32, 0.18, 1))
 	_fill_rect(image, Rect2i(tile_size, 0, tile_size, tile_size), Color(0.3, 0.6, 0.25, 1))
 	_fill_rect(image, Rect2i(tile_size * 2, 0, tile_size, tile_size), Color(0.9, 0.76, 0.18, 1))
+	_fill_rect(image, Rect2i(tile_size * 3, 0, tile_size, tile_size), UNDERGROUND_COLOR)
 	var texture := ImageTexture.create_from_image(image)
 	var tileset := TileSet.new()
 	tileset.tile_size = Vector2i(tile_size, tile_size)
@@ -308,6 +589,7 @@ func _ensure_tileset() -> void:
 	source.create_tile(TILE_DIRT)
 	source.create_tile(TILE_GRASS)
 	source.create_tile(TILE_GOLD)
+	source.create_tile(TILE_UNDERGROUND)
 	tile_map.tile_set = tileset
 
 func _apply_world_settings() -> void:
@@ -324,8 +606,9 @@ func _fill_rect(image: Image, rect: Rect2i, color: Color) -> void:
 		for y in range(rect.position.y, rect.position.y + rect.size.y):
 			image.set_pixel(x, y, color)
 
-func _rebuild_mining_selection_layer(layer: int, tiles: Dictionary) -> void:
+func _rebuild_overlay_layer(layer: int, tiles: Dictionary, color: Color) -> void:
 	_clear_layer_cells(layer)
+	tile_map.set_layer_modulate(layer, color)
 	for raw_tile in tiles.keys():
 		var tile: Vector2i = raw_tile
 		if not has_ground_at_tile(tile):
@@ -334,3 +617,34 @@ func _rebuild_mining_selection_layer(layer: int, tiles: Dictionary) -> void:
 
 func _clear_layer_cells(layer: int) -> void:
 	tile_map.clear_layer(layer)
+
+func _get_air_connected_selected_tiles(selected_tiles: Dictionary) -> Dictionary:
+	var connected: Dictionary = {}
+	var frontier: Array[Vector2i] = []
+	for raw_tile in selected_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not has_ground_at_tile(tile):
+			continue
+		for neighbor in get_orthogonal_neighbors(tile):
+			if is_walkable_air_tile(neighbor):
+				connected[tile] = true
+				frontier.append(tile)
+				break
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		for neighbor in get_orthogonal_neighbors(current):
+			if not selected_tiles.has(neighbor):
+				continue
+			if connected.has(neighbor):
+				continue
+			connected[neighbor] = true
+			frontier.append(neighbor)
+	return connected
+
+func _reconstruct_path(previous: Dictionary, start_tile: Vector2i, goal_tile: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = [goal_tile]
+	var cursor := goal_tile
+	while cursor != start_tile and previous.has(cursor):
+		cursor = previous[cursor]
+		path.push_front(cursor)
+	return path

@@ -6,6 +6,14 @@ const TERRAIN_TEST_HARNESS: GDScript = preload("res://scripts/testing/terrain_te
 
 var _terrain_harness: RefCounted = TERRAIN_TEST_HARNESS.new()
 
+func _clear_and_fill_ground(manager: TerritoryManager, tiles: Array[Vector2i]) -> void:
+	manager.tile_map.clear()
+	manager._gold_tiles.clear()
+	manager._tile_health.clear()
+	for tile in tiles:
+		manager.tile_map.set_cell(manager.TERRAIN_LAYER, tile, 0, manager.TILE_DIRT)
+		manager._tile_health[tile] = manager.TILE_HEALTH_DEFAULT
+
 func test_spawn_positions_always_land_inside_team_territory() -> void:
 	_terrain_harness.reset_runtime_state()
 	GameState.set_world_settings(64, 20, 12345)
@@ -235,6 +243,131 @@ func test_mining_selection_layers_render_and_clear_independently() -> void:
 
 	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_DRAFT_LAYER, draft_tile)).is_equal(-1)
 	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_COMMITTED_LAYER, committed_tile)).is_equal(-1)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_invalid_mining_selection_tiles_require_air_connectivity() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 20, 9996)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var valid_tile := Vector2i(12, manager._get_surface_height(12))
+	var invalid_tile := Vector2i(12, manager._get_surface_height(12) + 2)
+
+	var invalid_tiles := manager.get_invalid_mining_selection_tiles({
+		valid_tile: true,
+		invalid_tile: true,
+	})
+
+	assert_bool(invalid_tiles.has(valid_tile)).is_false()
+	assert_bool(invalid_tiles.has(invalid_tile)).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_destroyed_tiles_become_underground_air() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 20, 9997)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var tile := Vector2i(12, manager._get_surface_height(12))
+
+	assert_int(manager.get_tile_health(tile)).is_equal(manager.TILE_HEALTH_DEFAULT)
+	assert_bool(manager.apply_tile_damage(tile, 1)).is_false()
+	assert_int(manager.get_tile_health(tile)).is_equal(1)
+	assert_bool(manager.apply_tile_damage(tile, 1)).is_true()
+	assert_bool(manager.has_ground_at_tile(tile)).is_false()
+	assert_bool(manager.is_underground_tile(tile)).is_true()
+	assert_bool(manager.is_walkable_air_tile(tile)).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_miner_walk_neighbors_allow_one_tile_climb_and_two_tile_drop_only() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 9998)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(2, 5),
+		Vector2i(3, 5),
+		Vector2i(4, 4),
+		Vector2i(4, 7),
+	])
+
+	var start_tile := Vector2i(3, 4)
+	var neighbors: Array[Vector2i] = manager.get_miner_walk_neighbors(start_tile)
+
+	assert_bool(neighbors.has(Vector2i(2, 4))).is_true()
+	assert_bool(neighbors.has(Vector2i(4, 3))).is_true()
+	assert_bool(neighbors.has(Vector2i(4, 6))).is_true()
+	assert_bool(neighbors.has(Vector2i(4, 2))).is_false()
+	assert_bool(neighbors.has(Vector2i(4, 5))).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_stand_surface_world_y_at_x_snaps_to_nearest_supported_floor() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 9999)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(3, 5),
+		Vector2i(4, 4),
+	])
+
+	var low_floor_y: float = manager.stand_tile_to_world_position(Vector2i(3, 4)).y
+	var high_floor_y: float = manager.stand_tile_to_world_position(Vector2i(4, 3)).y
+
+	assert_float(manager.get_stand_surface_world_y_at_x(3.5 * manager.tile_size, high_floor_y)).is_equal_approx(
+		low_floor_y,
+		0.001
+	)
+	assert_float(manager.get_stand_surface_world_y_at_x(4.5 * manager.tile_size, low_floor_y)).is_equal_approx(
+		high_floor_y,
+		0.001
+	)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_miner_attack_tiles_allow_diagonal_stair_step_when_shared_corner_is_air() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10000)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(3, 5),
+		Vector2i(4, 4),
+	])
+
+	var target_tile := Vector2i(4, 4)
+	var attack_tiles: Array[Vector2i] = manager.get_miner_attack_tiles(target_tile)
+
+	assert_bool(attack_tiles.has(Vector2i(3, 4))).is_true()
+	assert_bool(attack_tiles.has(Vector2i(5, 3))).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_miner_attack_tiles_reject_diagonal_when_corner_is_fully_blocked() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10001)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(3, 5),
+		Vector2i(4, 4),
+		Vector2i(3, 4),
+		Vector2i(4, 3),
+	])
+
+	var target_tile := Vector2i(4, 4)
+	var attack_tiles: Array[Vector2i] = manager.get_miner_attack_tiles(target_tile)
+
+	assert_bool(attack_tiles.has(Vector2i(3, 3))).is_false()
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()

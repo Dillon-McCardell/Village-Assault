@@ -225,9 +225,36 @@ func _process_purchase_request(peer_id: int, item: ShopItem) -> void:
 	var current_money := GameState.get_money_for_peer(peer_id)
 	if current_money < price:
 		return
+	if item.id == "troop_miner" and not _can_purchase_miner(peer_id):
+		return
 	GameState.set_money_for_peer(peer_id, current_money - price)
 	item_purchased.emit(item.id, price)
 	if item.category == "Troops":
 		var team := GameState.get_team_for_peer(peer_id)
 		DebugConsole.log_msg("Enqueuing spawn: peer=%d item=%s team=%d" % [peer_id, item.id, team])
 		GameState.enqueue_spawn({ "peer_id": peer_id, "item_id": item.id, "team": team })
+
+func _can_purchase_miner(peer_id: int) -> bool:
+	var team := GameState.get_team_for_peer(peer_id)
+	var miner_count := 0
+	var scene := get_tree().get_current_scene()
+	if scene != null:
+		var units_root := scene.get_node_or_null("Units") as Node2D
+		if units_root != null:
+			for child in units_root.get_children():
+				if child == null or not is_instance_valid(child):
+					continue
+				if str(child.get("item_id")) != "troop_miner":
+					continue
+				if int(child.get("team")) != team:
+					continue
+				if child.has_method("is_alive") and not child.is_alive():
+					continue
+				miner_count += 1
+	for request in GameState._spawn_queue:
+		if request.get("item_id", "") != "troop_miner":
+			continue
+		if int(request.get("team", GameState.Team.NONE)) != team:
+			continue
+		miner_count += 1
+	return miner_count < 6

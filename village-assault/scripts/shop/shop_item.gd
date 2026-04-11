@@ -8,16 +8,18 @@ class_name ShopItem
 @export var health: int = 10
 @export var damage: int = 0
 @export var defense: int = 0
+@export var tile_damage: int = 0
 
 func get_display_label() -> String:
 	return "%s $%d\n%s" % [label, price, get_stats_label()]
 
 func get_stats_label() -> String:
-	return "♡ %d ⚔ %d ⛨ %d" % [health, damage, defense]
+	return "♡ %d ⚔ %d ⛨ %d ⛏ %d" % [health, damage, defense, tile_damage]
 
 func get_spawn_payload() -> Dictionary:
 	return {
 		"health": health,
 		"damage": damage,
 		"defense": defense,
+		"tile_damage": tile_damage,
 	}
