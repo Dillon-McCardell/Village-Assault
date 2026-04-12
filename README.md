@@ -1,5 +1,8 @@
 # Village Assault
 
+<img width="573" height="323" alt="image" src="https://github.com/user-attachments/assets/2ab7527e-8251-4231-9b59-a645a8710ca3" />
+
+
 A 2-player multiplayer side-on, block-based game built with Godot 4 and GDScript. Players each control one side of a village, purchasing troops, defenses, and turrets to assault the opposing side.
 
 ## Prerequisites
