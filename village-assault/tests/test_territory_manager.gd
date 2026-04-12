@@ -333,6 +333,105 @@ func test_stand_surface_world_y_at_x_snaps_to_nearest_supported_floor() -> void:
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
 
+func test_troop_standability_respects_unit_height_and_width() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10000)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(3, 5),
+		Vector2i(4, 5),
+		Vector2i(5, 5),
+		Vector2i(4, 4),
+		Vector2i(5, 4),
+	])
+
+	assert_bool(manager.is_troop_standable_tile(Vector2i(3, 4), 1, 1)).is_true()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(3, 4), 1, 2)).is_true()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(4, 4), 1, 1)).is_false()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(3, 4), 2, 2)).is_false()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(4, 4), 2, 2)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_wide_troop_can_stand_with_partial_support() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10004)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(4, 5),
+	])
+
+	assert_bool(manager.is_troop_standable_tile(Vector2i(3, 4), 2, 2)).is_true()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(4, 4), 2, 2)).is_true()
+	assert_bool(manager.is_troop_standable_tile(Vector2i(5, 4), 2, 2)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_troop_walk_target_allows_one_tile_climb_for_supported_sizes() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10001)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(6, 9),
+		Vector2i(7, 8),
+		Vector2i(8, 8),
+	])
+
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 1)).is_equal(Vector2i(7, 7))
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)).is_equal(Vector2i(7, 7))
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)).is_equal(Vector2i(7, 7))
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_troop_walk_target_allows_two_tile_climb_for_tall_units_only() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 12, 10005)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	_clear_and_fill_ground(manager, [
+		Vector2i(6, 9),
+		Vector2i(7, 7),
+		Vector2i(8, 7),
+	])
+
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 1)).is_equal(Vector2i(-1, -1))
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)).is_equal(Vector2i(7, 6))
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)).is_equal(Vector2i(7, 6))
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_troop_walk_target_allows_size_based_forward_drops() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(12, 14, 10002)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+
+	_clear_and_fill_ground(manager, [
+		Vector2i(6, 9),
+		Vector2i(7, 10),
+	])
+
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 1)).is_equal(Vector2i(7, 9))
+
+	_clear_and_fill_ground(manager, [
+		Vector2i(6, 9),
+		Vector2i(7, 11),
+		Vector2i(8, 11),
+	])
+
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)).is_equal(Vector2i(7, 10))
+	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)).is_equal(Vector2i(7, 10))
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
 func test_miner_attack_tiles_allow_diagonal_stair_step_when_shared_corner_is_air() -> void:
 	_terrain_harness.reset_runtime_state()
 	GameState.set_world_settings(12, 12, 10000)
@@ -368,6 +467,109 @@ func test_miner_attack_tiles_reject_diagonal_when_corner_is_fully_blocked() -> v
 	var attack_tiles: Array[Vector2i] = manager.get_miner_attack_tiles(target_tile)
 
 	assert_bool(attack_tiles.has(Vector2i(3, 3))).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_ore_health_defaults_to_100_and_depletion_clears_ore() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10002)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var ore_tile := Vector2i(-1, -1)
+	for raw_tile in manager.get_gold_tiles().keys():
+		ore_tile = raw_tile
+		break
+
+	assert_bool(manager.is_ore_tile(ore_tile)).is_true()
+	assert_int(manager.get_ore_health(ore_tile)).is_equal(manager.ORE_HEALTH_DEFAULT)
+	assert_bool(manager.apply_ore_damage(ore_tile, 99)).is_false()
+	assert_int(manager.get_ore_health(ore_tile)).is_equal(1)
+	assert_bool(manager.apply_ore_damage(ore_tile, 1)).is_true()
+	assert_bool(manager.is_ore_tile(ore_tile)).is_false()
+	assert_bool(manager.is_underground_tile(ore_tile)).is_true()
+	assert_bool(manager.is_walkable_air_tile(ore_tile)).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_reveal_ore_from_exposed_tile_marks_team_visibility_only() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10003)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var ore_tile := Vector2i(-1, -1)
+	for raw_tile in manager.get_gold_tiles().keys():
+		ore_tile = raw_tile
+		break
+	var exposed_tile := ore_tile + Vector2i.LEFT
+	manager.tile_map.erase_cell(manager.TERRAIN_LAYER, exposed_tile)
+	manager.tile_map.set_cell(manager.UNDERGROUND_LAYER, exposed_tile, 0, manager.TILE_UNDERGROUND)
+
+	var revealed := manager.reveal_ore_from_exposed_tile(exposed_tile, GameState.Team.LEFT)
+
+	assert_array(revealed).is_equal([ore_tile])
+	assert_bool(manager.is_ore_revealed_to_team(ore_tile, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_ore_revealed_to_team(ore_tile, GameState.Team.RIGHT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_harvest_queue_overlay_only_tracks_current_selection_order() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10004)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var ore_tiles: Array[Vector2i] = []
+	for raw_tile in manager.get_gold_tiles().keys():
+		ore_tiles.append(raw_tile)
+		if ore_tiles.size() == 2:
+			break
+
+	manager.set_harvest_queue_overlay(ore_tiles)
+	assert_bool(manager._harvest_queue_overlay_visible).is_true()
+	assert_array(manager._harvest_queue_overlay_tiles).is_equal(ore_tiles)
+
+	manager.clear_harvest_queue_overlay()
+	assert_bool(manager._harvest_queue_overlay_visible).is_false()
+	assert_array(manager._harvest_queue_overlay_tiles).is_empty()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_world_state_snapshot_reapplies_destroyed_tiles_depleted_ore_and_revealed_ore() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10005)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var terrain_tile := Vector2i(10, manager._get_surface_height(10))
+	assert_bool(manager.apply_tile_damage(terrain_tile, manager.TILE_HEALTH_DEFAULT)).is_true()
+
+	var ore_tile := Vector2i(-1, -1)
+	for raw_tile in manager.get_gold_tiles().keys():
+		ore_tile = raw_tile
+		break
+	assert_bool(manager.is_ore_tile(ore_tile)).is_true()
+	var exposed_tile := ore_tile + Vector2i.LEFT
+	manager.tile_map.erase_cell(manager.TERRAIN_LAYER, exposed_tile)
+	manager.tile_map.set_cell(manager.UNDERGROUND_LAYER, exposed_tile, 0, manager.TILE_UNDERGROUND)
+	manager.reveal_ore_from_exposed_tile(exposed_tile, GameState.Team.LEFT)
+	assert_bool(manager.apply_ore_damage(ore_tile, manager.ORE_HEALTH_DEFAULT)).is_true()
+
+	var destroyed_tiles := manager.get_destroyed_terrain_tiles()
+	var depleted_ore_tiles := manager.get_depleted_ore_tiles()
+	var revealed_snapshot := manager.get_revealed_ore_snapshot()
+
+	manager._build_terrain()
+	assert_bool(manager.has_ground_at_tile(terrain_tile)).is_true()
+	assert_bool(manager.is_ore_revealed_to_team(ore_tile, GameState.Team.LEFT)).is_false()
+	assert_bool(manager.is_ore_tile(ore_tile)).is_true()
+
+	manager.apply_world_state_snapshot(destroyed_tiles, depleted_ore_tiles, revealed_snapshot)
+
+	assert_bool(manager.has_ground_at_tile(terrain_tile)).is_false()
+	assert_bool(manager.is_ore_tile(ore_tile)).is_false()
+	assert_bool(manager.is_ore_revealed_to_team(ore_tile, GameState.Team.LEFT)).is_false()
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()

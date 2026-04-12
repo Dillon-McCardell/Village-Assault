@@ -1,5 +1,9 @@
 extends Node2D
 
+const TROOP_INVALID_TILE := Vector2i(-1, -1)
+const TROOP_FALL_ACCELERATION: float = 900.0
+const TROOP_MAX_FALL_SPEED: float = 400.0
+
 @export var speed: float = 32.0
 @export var stop_range: float = 12.0
 @export var unit_height: float = 16.0
@@ -55,6 +59,10 @@ var _world_rect: Rect2
 @onready var _health_bar_fill: ColorRect = $HealthBar/Fill
 var _visual_max_health: int = -1
 var _visual_current_health: int = -1
+var _troop_occupancy_width_tiles: int = 1
+var _troop_occupancy_height_tiles: int = 1
+var _troop_fall_velocity: float = 0.0
+var _troop_movement_target_tile: Vector2i = TROOP_INVALID_TILE
 
 func _enter_tree() -> void:
 	_configure_synchronizer()
@@ -89,13 +97,7 @@ func _physics_process(delta: float) -> void:
 	if _target != null:
 		_attack_target()
 		return
-	var direction := Vector2.ZERO
-	if team == GameState.Team.LEFT:
-		direction = Vector2.RIGHT
-	elif team == GameState.Team.RIGHT:
-		direction = Vector2.LEFT
-	position.x += direction.x * speed * delta
-	_snap_to_ground()
+	_process_grounded_movement(delta)
 	_check_despawn()
 
 func set_team(value: int) -> void:
@@ -194,7 +196,18 @@ func take_damage(amount: int) -> void:
 func _snap_to_ground() -> void:
 	if _territory_manager == null:
 		return
-	position.y = _territory_manager.get_surface_world_y_at_x(position.x, 0.0)
+	var stand_tile := _territory_manager.get_troop_standable_tile_for_world_position(
+		position,
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if stand_tile == TROOP_INVALID_TILE:
+		stand_tile = _find_spawn_stand_tile_in_column()
+	if stand_tile == TROOP_INVALID_TILE:
+		return
+	position = _territory_manager.troop_stand_tile_to_world_position(stand_tile, _troop_occupancy_width_tiles)
+	_troop_fall_velocity = 0.0
+	_troop_movement_target_tile = TROOP_INVALID_TILE
 
 func set_body_polygon(points: PackedVector2Array) -> void:
 	var current_body := _get_body()
@@ -203,6 +216,12 @@ func set_body_polygon(points: PackedVector2Array) -> void:
 	current_body.polygon = points
 	var bounds := _get_polygon_vertical_bounds(points)
 	unit_height = bounds.y - bounds.x
+	var tile_size_value := float(_territory_manager.tile_size if _territory_manager != null else 16)
+	var polygon_width := 0.0
+	for point in points:
+		polygon_width = maxf(polygon_width, absf(point.x))
+	_troop_occupancy_width_tiles = maxi(1, int(ceil((polygon_width * 2.0) / tile_size_value)))
+	_troop_occupancy_height_tiles = maxi(1, int(ceil(unit_height / float(_territory_manager.tile_size if _territory_manager != null else 16))))
 	current_body.position.y = -bounds.y
 	_update_health_bar_position(bounds)
 	_snap_to_ground()
@@ -290,6 +309,107 @@ func _has_simulation_authority() -> bool:
 	if multiplayer.multiplayer_peer == null:
 		return true
 	return is_multiplayer_authority()
+
+func _process_grounded_movement(delta: float) -> void:
+	var direction_x := 0
+	if team == GameState.Team.LEFT:
+		direction_x = 1
+	elif team == GameState.Team.RIGHT:
+		direction_x = -1
+	if direction_x == 0:
+		return
+	if _territory_manager == null:
+		position.x += float(direction_x) * speed * delta
+		return
+	if _troop_movement_target_tile != TROOP_INVALID_TILE:
+		if _territory_manager.is_troop_standable_tile(
+			_troop_movement_target_tile,
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		):
+			_follow_troop_ground_target(_troop_movement_target_tile, delta)
+			return
+		_troop_movement_target_tile = TROOP_INVALID_TILE
+	var current_tile := _get_troop_exact_stand_tile_from_position()
+	if _apply_troop_fall_if_unsupported(delta, current_tile):
+		return
+	if current_tile == TROOP_INVALID_TILE:
+		current_tile = _territory_manager.get_troop_standable_tile_for_world_position(
+			position,
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		)
+	if current_tile == TROOP_INVALID_TILE:
+		return
+	var forward_tile := _territory_manager.get_troop_walk_target(
+		current_tile,
+		direction_x,
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if forward_tile == TROOP_INVALID_TILE:
+		_troop_movement_target_tile = TROOP_INVALID_TILE
+		return
+	_follow_troop_ground_target(forward_tile, delta)
+
+func _follow_troop_ground_target(target_tile: Vector2i, delta: float) -> void:
+	if _territory_manager == null:
+		return
+	_troop_movement_target_tile = target_tile
+	var target_world := _territory_manager.troop_stand_tile_to_world_position(target_tile, _troop_occupancy_width_tiles)
+	var move_step := speed * delta
+	position.x = move_toward(position.x, target_world.x, move_step)
+	position.y = move_toward(position.y, target_world.y, move_step)
+	if position.distance_to(target_world) <= 0.01:
+		position = target_world
+		_troop_movement_target_tile = TROOP_INVALID_TILE
+
+func _get_troop_exact_stand_tile_from_position() -> Vector2i:
+	if _territory_manager == null:
+		return TROOP_INVALID_TILE
+	var exact_tile := Vector2i(
+		int(round((position.x / _territory_manager.tile_size) - (_troop_occupancy_width_tiles * 0.5))),
+		int(floor(position.y / _territory_manager.tile_size)) - 1
+	)
+	if _territory_manager.is_troop_standable_tile(exact_tile, _troop_occupancy_width_tiles, _troop_occupancy_height_tiles):
+		return exact_tile
+	return TROOP_INVALID_TILE
+
+func _apply_troop_fall_if_unsupported(delta: float, current_tile: Vector2i) -> bool:
+	if _territory_manager == null:
+		return false
+	if current_tile != TROOP_INVALID_TILE:
+		if _troop_fall_velocity > 0.0:
+			position = _territory_manager.troop_stand_tile_to_world_position(current_tile, _troop_occupancy_width_tiles)
+		_troop_fall_velocity = 0.0
+		return false
+	_troop_fall_velocity = minf(_troop_fall_velocity + TROOP_FALL_ACCELERATION * delta, TROOP_MAX_FALL_SPEED)
+	position.y += _troop_fall_velocity * delta
+	var landed_tile := _territory_manager.get_troop_standable_tile_for_world_position(
+		position,
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if landed_tile != TROOP_INVALID_TILE:
+		position = _territory_manager.troop_stand_tile_to_world_position(landed_tile, _troop_occupancy_width_tiles)
+		_troop_fall_velocity = 0.0
+	return true
+
+func _find_spawn_stand_tile_in_column() -> Vector2i:
+	if _territory_manager == null:
+		return TROOP_INVALID_TILE
+	var max_tile_x := _territory_manager.grid_width - _troop_occupancy_width_tiles
+	var base_tile_x := int(round((position.x / _territory_manager.tile_size) - (_troop_occupancy_width_tiles * 0.5)))
+	base_tile_x = clampi(base_tile_x, 0, maxi(0, max_tile_x))
+	for tile_y in range(_territory_manager.grid_height):
+		var candidate := Vector2i(base_tile_x, tile_y)
+		if _territory_manager.is_troop_standable_tile(
+			candidate,
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		):
+			return candidate
+	return TROOP_INVALID_TILE
 
 func _configure_synchronizer() -> void:
 	if synchronizer == null:

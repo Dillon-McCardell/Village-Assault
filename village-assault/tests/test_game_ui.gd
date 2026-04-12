@@ -3,6 +3,7 @@
 extends GdUnitTestSuite
 
 const GAME_SCENE: PackedScene = preload("res://scenes/game.tscn")
+var _next_test_port: int = NetworkManager.DEFAULT_PORT + 300
 const DISCONNECT_OVERLAY_SCENE: PackedScene = preload("res://scenes/ui/disconnect_overlay.tscn")
 const PAUSE_MENU_SCENE: PackedScene = preload("res://scenes/ui/pause_menu.tscn")
 
@@ -25,7 +26,8 @@ func _clear_node(node: Node) -> void:
 
 func _start_host_game() -> Node:
 	_reset_runtime_state()
-	NetworkManager.host(NetworkManager.DEFAULT_PORT)
+	NetworkManager.host(_next_test_port)
+	_next_test_port += 1
 	var game := GAME_SCENE.instantiate()
 	_mount_node(game)
 	return game

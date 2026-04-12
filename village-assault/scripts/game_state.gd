@@ -177,6 +177,13 @@ func _receive_scene_redirect(scene_name: String) -> void:
 func get_team_for_peer(peer_id: int) -> int:
 	return _peer_team.get(peer_id, Team.NONE)
 
+func get_peer_id_for_team(team: int) -> int:
+	for raw_peer_id in _peer_team.keys():
+		var peer_id := int(raw_peer_id)
+		if int(_peer_team[peer_id]) == team:
+			return peer_id
+	return -1
+
 func get_money_for_peer(peer_id: int) -> int:
 	return _peer_money.get(peer_id, 0)
 

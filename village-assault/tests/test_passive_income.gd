@@ -1,6 +1,7 @@
 ## Feature: passive-income
 ## Tests for host-authoritative passive income during active gameplay.
 extends GdUnitTestSuite
+var _next_test_port: int = NetworkManager.DEFAULT_PORT + 400
 
 
 func _reset_runtime_state() -> void:
@@ -11,7 +12,8 @@ func _reset_runtime_state() -> void:
 
 func _start_host_session() -> void:
 	_reset_runtime_state()
-	NetworkManager.host(NetworkManager.DEFAULT_PORT)
+	NetworkManager.host(_next_test_port)
+	_next_test_port += 1
 	GameState.set_current_scene("game")
 
 

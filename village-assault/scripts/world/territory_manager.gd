@@ -2,6 +2,8 @@ extends Node2D
 class_name TerritoryManager
 
 signal tile_destroyed(tile_pos: Vector2i)
+signal ore_revealed_for_team(team: int, tiles: Array)
+signal ore_depleted(tile_pos: Vector2i)
 
 @export var grid_width: int = 64
 @export var grid_height: int = 20
@@ -32,7 +34,12 @@ var _spawn_offsets: Dictionary = {
 var _heightmap: Array[int] = []
 var _gold_tiles: Dictionary = {}
 var _tile_health: Dictionary = {}
+var _ore_health: Dictionary = {}
+var _depleted_ore_tiles: Dictionary = {}
+var _revealed_ore_tiles_by_team: Dictionary = {}
 var _resolved_terrain_seed: int = 0
+var _harvest_queue_overlay_tiles: Array[Vector2i] = []
+var _harvest_queue_overlay_visible: bool = false
 
 const MAX_MINER_OVERLAY_LAYERS: int = 6
 const TILE_HEALTH_DEFAULT: int = 2
@@ -53,6 +60,9 @@ const MINING_DRAFT_ALPHA: float = 0.45
 const MINING_COMMITTED_ALPHA: float = 0.25
 const MINING_INVALID_COLOR: Color = Color(0.86, 0.18, 0.18, 0.75)
 const UNDERGROUND_COLOR: Color = Color(0.27, 0.16, 0.08, 1.0)
+const ORE_HEALTH_DEFAULT: int = 100
+const HARVEST_QUEUE_TEXT_COLOR: Color = Color(0, 0, 0, 1)
+const HARVEST_QUEUE_FONT_SIZE: int = 16
 
 func _ready() -> void:
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -60,6 +70,25 @@ func _ready() -> void:
 	_ensure_tilemap_layers()
 	_ensure_tileset()
 	_build_terrain()
+
+func _draw() -> void:
+	if not _harvest_queue_overlay_visible:
+		return
+	var font: Font = ThemeDB.fallback_font
+	if font == null:
+		return
+	for i in range(_harvest_queue_overlay_tiles.size()):
+		var tile := _harvest_queue_overlay_tiles[i]
+		var center := tile_to_world_center(tile) + Vector2(0, 5)
+		draw_string(
+			font,
+			center,
+			str(i + 1),
+			HORIZONTAL_ALIGNMENT_CENTER,
+			-1.0,
+			HARVEST_QUEUE_FONT_SIZE,
+			HARVEST_QUEUE_TEXT_COLOR
+		)
 
 func is_world_pos_in_team_territory(world_pos: Vector2, team: int) -> bool:
 	var tile := world_to_tile(world_pos)
@@ -92,6 +121,12 @@ func get_gold_tiles() -> Dictionary:
 func has_gold_at_tile(tile_pos: Vector2i) -> bool:
 	return _gold_tiles.has(tile_pos)
 
+func is_ore_tile(tile_pos: Vector2i) -> bool:
+	return _gold_tiles.has(tile_pos)
+
+func is_mineable_terrain_tile(tile_pos: Vector2i) -> bool:
+	return has_ground_at_tile(tile_pos) and not is_ore_tile(tile_pos)
+
 func has_ground_at_tile(tile_pos: Vector2i) -> bool:
 	if not is_tile_in_bounds(tile_pos):
 		return false
@@ -110,6 +145,83 @@ func is_tile_in_bounds(tile_pos: Vector2i) -> bool:
 
 func get_tile_health(tile_pos: Vector2i) -> int:
 	return int(_tile_health.get(tile_pos, 0))
+
+func get_ore_health(tile_pos: Vector2i) -> int:
+	return int(_ore_health.get(tile_pos, 0))
+
+func is_ore_revealed_to_team(tile_pos: Vector2i, team: int) -> bool:
+	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+	return team_lookup.has(tile_pos)
+
+func get_revealed_ore_tiles_for_team(team: int) -> Dictionary:
+	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+	return team_lookup.duplicate(true)
+
+func get_destroyed_terrain_tiles() -> Array[Vector2i]:
+	var destroyed_tiles: Array[Vector2i] = []
+	for raw_tile in tile_map.get_used_cells(UNDERGROUND_LAYER):
+		var tile: Vector2i = raw_tile
+		destroyed_tiles.append(tile)
+	destroyed_tiles.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		if a.y == b.y:
+			return a.x < b.x
+		return a.y < b.y
+	)
+	return destroyed_tiles
+
+func get_depleted_ore_tiles() -> Array[Vector2i]:
+	var depleted_tiles: Array[Vector2i] = []
+	for raw_tile in _depleted_ore_tiles.keys():
+		var tile: Vector2i = raw_tile
+		depleted_tiles.append(tile)
+	depleted_tiles.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		if a.y == b.y:
+			return a.x < b.x
+		return a.y < b.y
+	)
+	return depleted_tiles
+
+func get_revealed_ore_snapshot() -> Dictionary:
+	var snapshot: Dictionary = {}
+	for raw_team in _revealed_ore_tiles_by_team.keys():
+		var team := int(raw_team)
+		var ordered_tiles: Array[Vector2i] = []
+		for raw_tile in (_revealed_ore_tiles_by_team.get(team, {}) as Dictionary).keys():
+			var tile: Vector2i = raw_tile
+			ordered_tiles.append(tile)
+		ordered_tiles.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+			if a.y == b.y:
+				return a.x < b.x
+			return a.y < b.y
+		)
+		snapshot[team] = ordered_tiles
+	return snapshot
+
+func apply_world_state_snapshot(destroyed_tiles: Array, depleted_ore_tiles: Array, revealed_snapshot: Dictionary) -> void:
+	for raw_tile in destroyed_tiles:
+		if raw_tile is Vector2i:
+			destroy_tile(raw_tile)
+	for raw_tile in depleted_ore_tiles:
+		if raw_tile is Vector2i:
+			deplete_ore_tile(raw_tile)
+	for raw_team in revealed_snapshot.keys():
+		var team := int(raw_team)
+		reveal_ore_tiles_for_team(team, revealed_snapshot.get(raw_team, []))
+
+func set_harvest_queue_overlay(ordered_tiles: Array) -> void:
+	_harvest_queue_overlay_tiles = []
+	for tile in ordered_tiles:
+		if tile is Vector2i:
+			_harvest_queue_overlay_tiles.append(tile)
+	_harvest_queue_overlay_visible = not _harvest_queue_overlay_tiles.is_empty()
+	queue_redraw()
+
+func clear_harvest_queue_overlay() -> void:
+	if _harvest_queue_overlay_tiles.is_empty() and not _harvest_queue_overlay_visible:
+		return
+	_harvest_queue_overlay_tiles.clear()
+	_harvest_queue_overlay_visible = false
+	queue_redraw()
 
 func set_mining_draft_tiles(tiles: Dictionary, color: Color = Color(1, 1, 1, MINING_DRAFT_ALPHA)) -> void:
 	_rebuild_overlay_layer(MINING_DRAFT_LAYER, tiles, color)
@@ -230,8 +342,46 @@ func is_standable_tile(tile_pos: Vector2i) -> bool:
 		return false
 	return has_ground_at_tile(support_tile)
 
+func is_troop_standable_tile(tile_pos: Vector2i, width_tiles: int, height_tiles: int) -> bool:
+	var clamped_width := maxi(1, width_tiles)
+	var clamped_height := maxi(1, height_tiles)
+	if not _is_troop_body_clear_at(tile_pos, clamped_width, clamped_height):
+		return false
+	var has_support := false
+	for x_offset in range(clamped_width):
+		var body_x := tile_pos.x + x_offset
+		var support_tile := Vector2i(body_x, tile_pos.y + 1)
+		if not is_tile_in_bounds(support_tile):
+			return false
+		if has_ground_at_tile(support_tile):
+			has_support = true
+	return has_support
+
+func _is_troop_body_clear_at(tile_pos: Vector2i, width_tiles: int, height_tiles: int) -> bool:
+	var clamped_width := maxi(1, width_tiles)
+	var clamped_height := maxi(1, height_tiles)
+	for x_offset in range(clamped_width):
+		var body_x := tile_pos.x + x_offset
+		for y_offset in range(clamped_height):
+			var body_tile := Vector2i(body_x, tile_pos.y - y_offset)
+			if not is_tile_in_bounds(body_tile):
+				return false
+			if has_ground_at_tile(body_tile):
+				return false
+	return true
+
+func _get_troop_max_drop_tiles(height_tiles: int) -> int:
+	return 2 if maxi(1, height_tiles) >= 2 else 1
+
+func _get_troop_max_climb_tiles(height_tiles: int) -> int:
+	return 2 if maxi(1, height_tiles) >= 2 else 1
+
 func stand_tile_to_world_position(tile_pos: Vector2i) -> Vector2:
 	return Vector2((tile_pos.x + 0.5) * tile_size, (tile_pos.y + 1.0) * tile_size)
+
+func troop_stand_tile_to_world_position(tile_pos: Vector2i, width_tiles: int) -> Vector2:
+	var clamped_width := maxi(1, width_tiles)
+	return Vector2((tile_pos.x + clamped_width * 0.5) * tile_size, (tile_pos.y + 1.0) * tile_size)
 
 func get_stand_surface_world_y_at_x(world_x: float, reference_world_y: float) -> float:
 	var tile_x: int = int(clamp(int(floor(world_x / tile_size)), 0, grid_width - 1))
@@ -264,6 +414,52 @@ func get_standable_tile_for_world_position(world_pos: Vector2) -> Vector2i:
 	for candidate in candidates:
 		if is_standable_tile(candidate):
 			return candidate
+	return Vector2i(-1, -1)
+
+func get_troop_standable_tile_for_world_position(world_pos: Vector2, width_tiles: int, height_tiles: int) -> Vector2i:
+	var clamped_width := maxi(1, width_tiles)
+	var base_tile_x := int(round((world_pos.x / tile_size) - (clamped_width * 0.5)))
+	var base_tile_y := int(floor(world_pos.y / tile_size)) - 1
+	var candidates: Array[Vector2i] = [
+		Vector2i(base_tile_x, base_tile_y),
+		Vector2i(base_tile_x, base_tile_y - 1),
+		Vector2i(base_tile_x, base_tile_y + 1),
+		Vector2i(base_tile_x - 1, base_tile_y),
+		Vector2i(base_tile_x + 1, base_tile_y),
+		Vector2i(base_tile_x - 1, base_tile_y - 1),
+		Vector2i(base_tile_x + 1, base_tile_y - 1),
+		Vector2i(base_tile_x - 1, base_tile_y + 1),
+		Vector2i(base_tile_x + 1, base_tile_y + 1),
+	]
+	for candidate in candidates:
+		if is_troop_standable_tile(candidate, width_tiles, height_tiles):
+			return candidate
+	return Vector2i(-1, -1)
+
+func get_troop_walk_target(tile_pos: Vector2i, direction_x: int, width_tiles: int, height_tiles: int) -> Vector2i:
+	if direction_x == 0:
+		return Vector2i(-1, -1)
+	var same_level := tile_pos + Vector2i(direction_x, 0)
+	if is_troop_standable_tile(same_level, width_tiles, height_tiles):
+		return same_level
+	var max_climb := _get_troop_max_climb_tiles(height_tiles)
+	for climb_distance in range(1, max_climb + 1):
+		var climb := tile_pos + Vector2i(direction_x, -climb_distance)
+		if is_troop_standable_tile(climb, width_tiles, height_tiles):
+			return climb
+	var max_drop := _get_troop_max_drop_tiles(height_tiles)
+	for drop_distance in range(1, max_drop + 1):
+		var drop := tile_pos + Vector2i(direction_x, drop_distance)
+		if not is_troop_standable_tile(drop, width_tiles, height_tiles):
+			continue
+		var clear_drop := true
+		for step in range(0, drop_distance + 1):
+			var step_tile := tile_pos + Vector2i(direction_x, step)
+			if not _is_troop_body_clear_at(step_tile, width_tiles, height_tiles):
+				clear_drop = false
+				break
+		if clear_drop:
+			return drop
 	return Vector2i(-1, -1)
 
 func get_miner_walk_neighbors(tile: Vector2i) -> Array[Vector2i]:
@@ -347,6 +543,8 @@ func find_miner_path(start_tile: Vector2i, goal_tiles: Array[Vector2i]) -> Array
 func apply_tile_damage(tile_pos: Vector2i, amount: int) -> bool:
 	if amount <= 0:
 		return false
+	if is_ore_tile(tile_pos):
+		return false
 	if not has_ground_at_tile(tile_pos):
 		return false
 	var remaining_health: int = max(0, get_tile_health(tile_pos) - amount)
@@ -364,7 +562,61 @@ func destroy_tile(tile_pos: Vector2i) -> void:
 	tile_map.set_cell(UNDERGROUND_LAYER, tile_pos, 0, TILE_UNDERGROUND)
 	_gold_tiles.erase(tile_pos)
 	_tile_health.erase(tile_pos)
+	_ore_health.erase(tile_pos)
+	for team in _revealed_ore_tiles_by_team.keys():
+		var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+		team_lookup.erase(tile_pos)
+		_revealed_ore_tiles_by_team[team] = team_lookup
 	tile_destroyed.emit(tile_pos)
+
+func apply_ore_damage(tile_pos: Vector2i, amount: int) -> bool:
+	if amount <= 0 or not is_ore_tile(tile_pos):
+		return false
+	var remaining_health: int = max(0, get_ore_health(tile_pos) - amount)
+	if remaining_health <= 0:
+		deplete_ore_tile(tile_pos)
+		return true
+	_ore_health[tile_pos] = remaining_health
+	return false
+
+func deplete_ore_tile(tile_pos: Vector2i) -> void:
+	if not is_ore_tile(tile_pos):
+		return
+	tile_map.erase_cell(TERRAIN_LAYER, tile_pos)
+	tile_map.erase_cell(RESOURCE_LAYER, tile_pos)
+	tile_map.set_cell(UNDERGROUND_LAYER, tile_pos, 0, TILE_UNDERGROUND)
+	_gold_tiles.erase(tile_pos)
+	_ore_health.erase(tile_pos)
+	_tile_health.erase(tile_pos)
+	_depleted_ore_tiles[tile_pos] = true
+	for team in _revealed_ore_tiles_by_team.keys():
+		var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+		team_lookup.erase(tile_pos)
+		_revealed_ore_tiles_by_team[team] = team_lookup
+	ore_depleted.emit(tile_pos)
+
+func reveal_ore_from_exposed_tile(tile_pos: Vector2i, team: int) -> Array[Vector2i]:
+	var newly_revealed: Array[Vector2i] = []
+	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+	for neighbor in get_orthogonal_neighbors(tile_pos):
+		if not is_ore_tile(neighbor):
+			continue
+		if team_lookup.has(neighbor):
+			continue
+		team_lookup[neighbor] = true
+		newly_revealed.append(neighbor)
+	_revealed_ore_tiles_by_team[team] = team_lookup
+	if not newly_revealed.is_empty():
+		DebugConsole.log_msg("OreReveal: team=%d tiles=%s" % [team, str(newly_revealed)])
+		ore_revealed_for_team.emit(team, newly_revealed.duplicate())
+	return newly_revealed
+
+func reveal_ore_tiles_for_team(team: int, tiles: Array) -> void:
+	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+	for tile in tiles:
+		if tile is Vector2i and is_ore_tile(tile):
+			team_lookup[tile] = true
+	_revealed_ore_tiles_by_team[team] = team_lookup
 
 func get_base_anchor_world(team: int) -> Vector2:
 	var flat_width: int = _get_flat_width()
@@ -407,6 +659,12 @@ func _build_terrain() -> void:
 	_heightmap = _generate_heightmap(_resolved_terrain_seed)
 	_gold_tiles = _generate_gold_tiles(_resolved_terrain_seed)
 	_tile_health.clear()
+	_ore_health.clear()
+	_depleted_ore_tiles.clear()
+	_revealed_ore_tiles_by_team = {
+		GameState.Team.LEFT: {},
+		GameState.Team.RIGHT: {},
+	}
 	tile_map.clear()
 	for x in range(grid_width):
 		var surface_y: int = _get_surface_height(x)
@@ -420,7 +678,9 @@ func _build_terrain() -> void:
 	for raw_tile in _gold_tiles.keys():
 		var tile: Vector2i = raw_tile
 		tile_map.set_cell(RESOURCE_LAYER, tile, 0, TILE_GOLD)
+		_ore_health[tile] = ORE_HEALTH_DEFAULT
 	clear_mining_selection_visuals()
+	clear_harvest_queue_overlay()
 
 func _generate_heightmap(terrain_seed_value: int) -> Array[int]:
 	var heights: Array[int] = []
