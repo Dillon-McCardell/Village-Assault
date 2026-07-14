@@ -83,7 +83,7 @@ func _configure_synchronizer() -> void:
 	synchronizer.replication_config = config
 
 func _physics_process(delta: float) -> void:
-	if not _has_simulation_authority():
+	if not _has_mining_authority():
 		return
 	if not is_alive():
 		return
@@ -108,6 +108,9 @@ func _physics_process(delta: float) -> void:
 			_set_runtime_state(MinerRuntimeState.IDLE)
 			_clear_movement_path()
 	_refresh_runtime_snapshot()
+
+func _has_mining_authority() -> bool:
+	return multiplayer.multiplayer_peer == null or multiplayer.is_server()
 
 func initialize_from_spawn_payload(spawn_payload: Dictionary) -> void:
 	super.initialize_from_spawn_payload(spawn_payload)

@@ -7,7 +7,11 @@ const SCENE_LOBBY: String = "lobby"
 const SCENE_GAME: String = "game"
 const SCENARIO_GAME_RECONNECT: String = "game_reconnect"
 const SCENARIO_LOBBY_RECONNECT: String = "lobby_reconnect"
+const SCENARIO_CUSTOM_SESSION: String = "custom_session"
 const POST_RECONNECT_DEADLINE_MSEC: int = 5000
+const TEST_SESSION_CONFIGURATOR: GDScript = preload(
+	"res://scripts/testing/test_session_configurator.gd"
+)
 
 var _active: bool = false
 var _role: String = ""
@@ -18,6 +22,11 @@ var _artifacts_dir: String = ""
 var _run_id: String = ""
 var _event_path: String = ""
 var _event_file: FileAccess
+var _session_config_path: String = ""
+var _session_player_count: int = 1
+var _session_config: Dictionary = {}
+var _session_configurator: TestSessionConfigurator = null
+var _custom_session_applied: bool = false
 
 var _host_started: bool = false
 var _join_started: bool = false
@@ -54,10 +63,24 @@ func _ready() -> void:
 		push_error("TestHarness: invalid test role '%s'" % _role)
 		_active = false
 		return
-	if _scenario != SCENARIO_GAME_RECONNECT and _scenario != SCENARIO_LOBBY_RECONNECT:
+	if _scenario not in [SCENARIO_GAME_RECONNECT, SCENARIO_LOBBY_RECONNECT, SCENARIO_CUSTOM_SESSION]:
 		push_error("TestHarness: invalid test scenario '%s'" % _scenario)
 		_active = false
 		return
+	if _scenario == SCENARIO_CUSTOM_SESSION:
+		_session_config_path = String(args.get("test-session-config", ""))
+		_session_player_count = clampi(int(args.get("test-session-players", 1)), 1, 2)
+		_session_configurator = TEST_SESSION_CONFIGURATOR.new()
+		_session_config = _session_configurator.load_scenario(_session_config_path)
+		if _session_config.is_empty():
+			push_error(
+				"TestHarness: invalid custom session '%s': %s" % [
+					_session_config_path,
+					"; ".join(_session_configurator.errors),
+				]
+			)
+			_active = false
+			return
 	if not _open_event_file():
 		push_error("TestHarness: failed to open event file '%s'" % _event_path)
 		_active = false
@@ -84,7 +107,17 @@ func on_boot_menu_ready(menu: BootMenu) -> void:
 	_emit_event("boot_ready", {"scene": SCENE_BOOT})
 	if _role == ROLE_HOST and not _host_started:
 		_host_started = true
-		menu.call_deferred("start_host_for_test", _port)
+		if _scenario == SCENARIO_CUSTOM_SESSION:
+			var settings := _session_configurator.get_world_settings(_session_config)
+			menu.call_deferred(
+				"start_custom_test_host",
+				_port,
+				int(settings["width"]),
+				int(settings["height"]),
+				int(settings["seed"])
+			)
+		else:
+			menu.call_deferred("start_host_for_test", _port)
 	elif _role == ROLE_CLIENT and not _join_started:
 		_join_started = true
 		menu.call_deferred("join_for_test", _address, _port)
@@ -109,6 +142,16 @@ func on_lobby_state_changed(lobby: Control) -> void:
 	})
 	if _role != ROLE_HOST or _match_started:
 		return
+	if _scenario == SCENARIO_CUSTOM_SESSION:
+		if _get_lobby_player_count(lobby) < _session_player_count:
+			return
+		_match_started = true
+		_emit_event("match_started", {
+			"scene": SCENE_LOBBY,
+			"session_players": _session_player_count,
+		})
+		lobby.call_deferred("start_game_for_test")
+		return
 	if _scenario != SCENARIO_GAME_RECONNECT:
 		return
 	if _get_lobby_player_count(lobby) < 2:
@@ -128,9 +171,51 @@ func on_game_ready(game: Node) -> void:
 		"scene": SCENE_GAME,
 		"snapshot": game.call("get_test_snapshot"),
 	})
+	if _scenario == SCENARIO_CUSTOM_SESSION:
+		call_deferred("_apply_custom_session", game)
+		return
 	if _role == ROLE_HOST and not _spawn_requested:
 		_spawn_requested = true
 		game.call_deferred("spawn_local_test_unit_for_test")
+
+func _apply_custom_session(game: Node) -> void:
+	if _custom_session_applied or game == null or not is_instance_valid(game):
+		return
+	_custom_session_applied = true
+	if not _session_configurator.apply_terrain(game, _session_config):
+		_emit_event("failure", {
+			"message": "Failed to apply custom terrain",
+			"errors": Array(_session_configurator.errors),
+		})
+		return
+	var spawned_ids: Array[int] = []
+	if _role == ROLE_HOST:
+		spawned_ids = _session_configurator.spawn_troops(game, _session_config)
+	else:
+		var expected_ids := _session_configurator.get_troop_unit_ids(_session_config)
+		var replication_deadline := Time.get_ticks_msec() + POST_RECONNECT_DEADLINE_MSEC
+		while not _game_has_units(game, expected_ids):
+			if Time.get_ticks_msec() >= replication_deadline:
+				_emit_event("failure", {
+					"message": "Timed out waiting for custom session troops",
+					"expected_unit_ids": expected_ids,
+					"snapshot": game.call("get_test_snapshot"),
+				})
+				return
+			await get_tree().process_frame
+	_session_configurator.apply_camera(game, _session_config, _role)
+	_emit_event("custom_session_ready", {
+		"config": _session_config_path,
+		"name": String(_session_config.get("name", _session_config_path.get_file())),
+		"spawned_unit_ids": spawned_ids,
+		"snapshot": game.call("get_test_snapshot"),
+	})
+
+func _game_has_units(game: Node, unit_ids: Array[int]) -> bool:
+	for unit_id in unit_ids:
+		if game.call("get_unit_by_id", unit_id) == null:
+			return false
+	return true
 
 func _connect_runtime_signals() -> void:
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)

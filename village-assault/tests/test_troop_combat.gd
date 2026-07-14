@@ -89,6 +89,8 @@ func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 			.override_failure_message("Expected spawn payload for %s to include defense" % item_id)
 		assert_bool(payload.has("tile_damage")).is_true()\
 			.override_failure_message("Expected spawn payload for %s to include tile_damage" % item_id)
+		assert_bool(payload.has("vision_radius_tiles")).is_true()\
+			.override_failure_message("Expected spawn payload for %s to include vision radius" % item_id)
 
 		assert_int(int(payload["health"])).is_greater(0)\
 			.override_failure_message("Expected health > 0 for %s" % item_id)
@@ -98,6 +100,12 @@ func test_shop_items_expose_valid_troop_spawn_payloads() -> void:
 			.override_failure_message("Expected defense >= 0 for %s" % item_id)
 		assert_int(int(payload["tile_damage"])).is_greater_equal(0)\
 			.override_failure_message("Expected tile_damage >= 0 for %s" % item_id)
+
+		var expected_vision_radius := 5.0 if item_id == "troop_scout" else 3.0
+		assert_float(float(payload["vision_radius_tiles"])).is_equal_approx(
+			expected_vision_radius,
+			0.001
+		)
 
 	var miner := (TROOP_ITEM_SCRIPTS["troop_miner"] as GDScript).new() as ShopItem
 	assert_int(miner.health).is_equal(5)

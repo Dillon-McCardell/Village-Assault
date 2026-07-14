@@ -4,6 +4,7 @@ class_name TerritoryManager
 signal tile_destroyed(tile_pos: Vector2i)
 signal ore_revealed_for_team(team: int, tiles: Array)
 signal ore_depleted(tile_pos: Vector2i)
+signal fog_revealed_for_team(team: int, tiles: Array, circles: Array)
 
 @export var grid_width: int = 64
 @export var grid_height: int = 20
@@ -23,8 +24,13 @@ signal ore_depleted(tile_pos: Vector2i)
 @export var gold_window_size: int = 10
 @export var gold_max_per_window: int = 2
 @export_range(0.0, 1.0, 0.01) var gold_target_ratio: float = 0.03
+@export_range(0.0, 1.0, 0.05) var fog_explored_opacity: float = 0.7
+@export_range(0.05, 1.0, 0.05) var fog_vision_appear_duration_sec: float = 0.2
+@export_range(0.05, 1.0, 0.05) var fog_vision_recede_duration_sec: float = 0.4
 
 @onready var tile_map: TileMap = $WorldTileMap
+
+const FOG_OVERLAY_SCRIPT: GDScript = preload("res://scripts/world/fog_of_war_overlay.gd")
 
 var _spawn_offsets: Dictionary = {
 	GameState.Team.LEFT: 0,
@@ -37,11 +43,23 @@ var _tile_health: Dictionary = {}
 var _ore_health: Dictionary = {}
 var _depleted_ore_tiles: Dictionary = {}
 var _revealed_ore_tiles_by_team: Dictionary = {}
+var _fog_exploration_images_by_team: Dictionary = {}
+var _fog_current_sources_by_team: Dictionary = {}
 var _resolved_terrain_seed: int = 0
+var _exact_surface_profile_active: bool = false
 var _harvest_queue_overlay_tiles: Array[Vector2i] = []
 var _harvest_queue_overlay_visible: bool = false
+var _fog_overlay: CanvasItem = null
+var _fog_mask_image: Image = null
+var _fog_mask_texture: ImageTexture = null
+var _fog_local_team: int = GameState.Team.NONE
+var _fog_current_target_image: Image = null
+var _fog_current_display_image: Image = null
+var _fog_current_source_signature: String = ""
 
 const MAX_MINER_OVERLAY_LAYERS: int = 6
+const FOG_REVEAL_RADIUS_TILES: int = 3
+const FOG_MASK_PIXELS_PER_TILE: int = 4
 const TILE_HEALTH_DEFAULT: int = 2
 const TERRAIN_LAYER: int = 0
 const RESOURCE_LAYER: int = 1
@@ -51,6 +69,11 @@ const MINING_INVALID_LAYER: int = 4
 const MINING_COMMITTED_LAYER_START: int = 5
 const MINING_COMMITTED_LAYER: int = MINING_COMMITTED_LAYER_START
 const MINING_COMMITTED_LAYER_END: int = MINING_COMMITTED_LAYER_START + MAX_MINER_OVERLAY_LAYERS - 1
+const TERRAIN_RENDER_Z_INDEX: int = 0
+const RESOURCE_RENDER_Z_INDEX: int = 1
+const UNDERGROUND_RENDER_Z_INDEX: int = 2
+const FOG_OVERLAY_Z_INDEX: int = 8
+const MINING_OVERLAY_Z_INDEX: int = 10
 const GOLD_SEED_SALT: int = 7919
 const TILE_DIRT: Vector2i = Vector2i(0, 0)
 const TILE_GRASS: Vector2i = Vector2i(1, 0)
@@ -69,7 +92,11 @@ func _ready() -> void:
 	_apply_world_settings()
 	_ensure_tilemap_layers()
 	_ensure_tileset()
+	_ensure_fog_overlay()
 	_build_terrain()
+
+func _process(delta: float) -> void:
+	_update_fog_vision_transition(delta)
 
 func _draw() -> void:
 	if not _harvest_queue_overlay_visible:
@@ -153,6 +180,36 @@ func is_ore_revealed_to_team(tile_pos: Vector2i, team: int) -> bool:
 	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
 	return team_lookup.has(tile_pos)
 
+func is_fog_revealed_to_team(tile_pos: Vector2i, team: int) -> bool:
+	if not is_tile_in_bounds(tile_pos):
+		return false
+	return _sample_fog_strength_image(
+		_fog_exploration_images_by_team.get(team) as Image,
+		tile_to_world_center(tile_pos)
+	) > 0.01
+
+func get_fog_alpha_at_world_position(world_pos: Vector2, team: int) -> float:
+	if team == GameState.Team.NONE:
+		return 0.0
+	if not _is_underground_fog_candidate(world_to_tile(world_pos)):
+		return 0.0
+	var explored := _sample_fog_strength_image(
+		_fog_exploration_images_by_team.get(team) as Image,
+		world_pos
+	)
+	var current := get_current_fog_visibility_at_world_position(world_pos, team)
+	return _compose_fog_alpha(explored, current)
+
+func get_current_fog_visibility_at_world_position(world_pos: Vector2, team: int) -> float:
+	if team == GameState.Team.NONE:
+		return 0.0
+	if not _is_underground_fog_candidate(world_to_tile(world_pos)):
+		return 1.0
+	if team == _fog_local_team:
+		return _sample_fog_strength_image(_fog_current_target_image, world_pos)
+	var source_image := _build_fog_vision_image(_fog_current_sources_by_team.get(team, []))
+	return _sample_fog_strength_image(source_image, world_pos)
+
 func get_revealed_ore_tiles_for_team(team: int) -> Dictionary:
 	var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
 	return team_lookup.duplicate(true)
@@ -197,7 +254,25 @@ func get_revealed_ore_snapshot() -> Dictionary:
 		snapshot[team] = ordered_tiles
 	return snapshot
 
-func apply_world_state_snapshot(destroyed_tiles: Array, depleted_ore_tiles: Array, revealed_snapshot: Dictionary) -> void:
+func get_revealed_fog_snapshot() -> Dictionary:
+	var snapshot: Dictionary = {}
+	for team in [GameState.Team.LEFT, GameState.Team.RIGHT]:
+		snapshot[team] = _build_fog_exploration_snapshot(team)
+	return snapshot
+
+func get_revealed_fog_snapshot_for_team(team: int) -> Dictionary:
+	if team == GameState.Team.NONE:
+		return {}
+	return {
+		team: _build_fog_exploration_snapshot(team),
+	}
+
+func apply_world_state_snapshot(
+	destroyed_tiles: Array,
+	depleted_ore_tiles: Array,
+	revealed_snapshot: Dictionary,
+	revealed_fog_snapshot: Dictionary = {}
+) -> void:
 	for raw_tile in destroyed_tiles:
 		if raw_tile is Vector2i:
 			destroy_tile(raw_tile)
@@ -207,6 +282,141 @@ func apply_world_state_snapshot(destroyed_tiles: Array, depleted_ore_tiles: Arra
 	for raw_team in revealed_snapshot.keys():
 		var team := int(raw_team)
 		reveal_ore_tiles_for_team(team, revealed_snapshot.get(raw_team, []))
+	for raw_team in revealed_fog_snapshot.keys():
+		var team := int(raw_team)
+		apply_revealed_fog_snapshot_for_team(team, revealed_fog_snapshot.get(raw_team, []))
+
+func set_fog_local_team(team: int) -> void:
+	if _fog_local_team == team:
+		_update_fog_overlay_visibility()
+		return
+	_fog_local_team = team
+	_fog_current_source_signature = ""
+	_fog_current_target_image = _create_fog_strength_image()
+	_fog_current_display_image = _create_fog_strength_image()
+	_rebuild_current_fog_vision_target()
+	_rebuild_fog_mask()
+
+func set_current_fog_vision_sources_for_team(team: int, sources: Array) -> void:
+	if team == GameState.Team.NONE:
+		return
+	var normalized_sources: Array = []
+	for raw_source in sources:
+		if not raw_source is Dictionary:
+			continue
+		var source := _normalize_fog_source(raw_source as Dictionary)
+		if not source.is_empty():
+			normalized_sources.append(source)
+	_fog_current_sources_by_team[team] = normalized_sources
+	if team != _fog_local_team:
+		return
+	var signature := var_to_str(normalized_sources)
+	if signature == _fog_current_source_signature:
+		return
+	_fog_current_source_signature = signature
+	_rebuild_current_fog_vision_target()
+
+func reveal_fog_circle_for_team(
+	team: int,
+	center_tile: Vector2i,
+	radius_tiles: float = FOG_REVEAL_RADIUS_TILES
+) -> Array[Vector2i]:
+	return reveal_fog_circle_at_world_for_team(
+		team,
+		tile_to_world_center(center_tile),
+		radius_tiles
+	)
+
+func reveal_fog_circle_at_world_for_team(
+	team: int,
+	center_world: Vector2,
+	radius_tiles: float = FOG_REVEAL_RADIUS_TILES,
+	wall_feather_tiles: float = 1.0,
+	edge_feather_tiles: float = 1.0,
+	stamp_spacing_tiles: float = 0.25
+) -> Array[Vector2i]:
+	return reveal_fog_from_source_for_team(team, {
+		"center": center_world,
+		"radius_tiles": radius_tiles,
+		"wall_feather_tiles": wall_feather_tiles,
+		"edge_feather_tiles": edge_feather_tiles,
+		"stamp_spacing_tiles": stamp_spacing_tiles,
+	})
+
+func reveal_fog_from_source_for_team(team: int, raw_source: Dictionary) -> Array[Vector2i]:
+	if team == GameState.Team.NONE:
+		return []
+	var source := _normalize_fog_source(raw_source, true)
+	if source.is_empty():
+		return []
+	var exploration_image := _get_or_create_fog_exploration_image(team)
+	var connected_air := _get_connected_air_lookup_for_source(source)
+	var changed := _stamp_fog_vision_image(exploration_image, source, connected_air)
+	if not changed:
+		return []
+	if team == _fog_local_team:
+		_rebuild_fog_mask()
+	var explored_tiles: Array[Vector2i] = []
+	for raw_tile in connected_air.keys():
+		var tile: Vector2i = raw_tile
+		if _is_underground_air_fog_candidate(tile):
+			explored_tiles.append(tile)
+	fog_revealed_for_team.emit(team, explored_tiles.duplicate(), [source])
+	return explored_tiles
+
+func reveal_fog_circle_tiles_for_team(
+	team: int,
+	center_tile: Vector2i,
+	radius_tiles: int,
+	_tiles: Array
+) -> Array[Vector2i]:
+	return reveal_fog_circle_for_team(team, center_tile, radius_tiles)
+
+func reveal_fog_tiles_for_team(team: int, tiles: Array) -> Array[Vector2i]:
+	var newly_revealed := _apply_revealed_fog_tiles_for_team(team, tiles)
+	if not newly_revealed.is_empty():
+		fog_revealed_for_team.emit(team, newly_revealed.duplicate(), [])
+	return newly_revealed
+
+func apply_revealed_fog_tiles_for_team(team: int, tiles: Array) -> Array[Vector2i]:
+	return _apply_revealed_fog_tiles_for_team(team, tiles)
+
+func apply_revealed_fog_delta_for_team(team: int, tiles: Array, circles: Array = []) -> Array[Vector2i]:
+	var newly_revealed := _apply_revealed_fog_tiles_for_team(team, tiles, false)
+	var changed := not newly_revealed.is_empty()
+	for raw_source in circles:
+		if not raw_source is Dictionary:
+			continue
+		var source_dict := raw_source as Dictionary
+		if source_dict.has("radius") and not source_dict.has("radius_tiles"):
+			source_dict = source_dict.duplicate(true)
+			source_dict["radius_tiles"] = float(source_dict.get("radius", 0.0)) / float(tile_size)
+		var source := _normalize_fog_source(source_dict)
+		if source.is_empty():
+			continue
+		changed = _stamp_fog_vision_image(
+			_get_or_create_fog_exploration_image(team),
+			source,
+			_get_connected_air_lookup_for_source(source)
+		) or changed
+	if changed and team == _fog_local_team:
+		_rebuild_fog_mask()
+	return newly_revealed
+
+func apply_revealed_fog_snapshot_for_team(team: int, snapshot: Variant) -> Array[Vector2i]:
+	if snapshot is Dictionary:
+		var snapshot_dict := snapshot as Dictionary
+		if snapshot_dict.has("data"):
+			_apply_fog_exploration_snapshot(team, snapshot_dict)
+			return []
+		return apply_revealed_fog_delta_for_team(
+			team,
+			snapshot_dict.get("tiles", []),
+			snapshot_dict.get("circles", [])
+		)
+	if snapshot is Array:
+		return apply_revealed_fog_delta_for_team(team, snapshot, [])
+	return []
 
 func set_harvest_queue_overlay(ordered_tiles: Array) -> void:
 	_harvest_queue_overlay_tiles = []
@@ -568,6 +778,55 @@ func destroy_tile(tile_pos: Vector2i) -> void:
 		team_lookup.erase(tile_pos)
 		_revealed_ore_tiles_by_team[team] = team_lookup
 	tile_destroyed.emit(tile_pos)
+	_rebuild_current_fog_vision_target()
+	_rebuild_fog_mask()
+
+func apply_test_terrain_layout(
+	surface_heights: Array[int],
+	carved_tiles: Array[Vector2i],
+	filled_tiles: Array[Vector2i]
+) -> bool:
+	if not surface_heights.is_empty():
+		if surface_heights.size() != grid_width:
+			return false
+		for surface_y in surface_heights:
+			if surface_y < 0 or surface_y >= grid_height:
+				return false
+		_heightmap = surface_heights.duplicate()
+		_exact_surface_profile_active = true
+		_gold_tiles.clear()
+		_reset_terrain_runtime_state()
+		_populate_terrain_tiles()
+	for tile in carved_tiles:
+		if not is_tile_in_bounds(tile):
+			continue
+		tile_map.erase_cell(TERRAIN_LAYER, tile)
+		tile_map.erase_cell(RESOURCE_LAYER, tile)
+		tile_map.set_cell(UNDERGROUND_LAYER, tile, 0, TILE_UNDERGROUND)
+		_gold_tiles.erase(tile)
+		_tile_health.erase(tile)
+		_ore_health.erase(tile)
+		_depleted_ore_tiles.erase(tile)
+	for tile in filled_tiles:
+		if not is_tile_in_bounds(tile):
+			continue
+		var atlas_coords := TILE_GRASS if tile.y == _get_surface_height(tile.x) else TILE_DIRT
+		tile_map.set_cell(TERRAIN_LAYER, tile, 0, atlas_coords)
+		tile_map.erase_cell(RESOURCE_LAYER, tile)
+		tile_map.erase_cell(UNDERGROUND_LAYER, tile)
+		_gold_tiles.erase(tile)
+		_tile_health[tile] = TILE_HEALTH_DEFAULT
+		_ore_health.erase(tile)
+		_depleted_ore_tiles.erase(tile)
+		for team in _revealed_ore_tiles_by_team.keys():
+			var team_lookup: Dictionary = _revealed_ore_tiles_by_team.get(team, {})
+			team_lookup.erase(tile)
+			_revealed_ore_tiles_by_team[team] = team_lookup
+	clear_mining_selection_visuals()
+	clear_harvest_queue_overlay()
+	_rebuild_current_fog_vision_target()
+	_rebuild_fog_mask()
+	return true
 
 func apply_ore_damage(tile_pos: Vector2i, amount: int) -> bool:
 	if amount <= 0 or not is_ore_tile(tile_pos):
@@ -594,6 +853,8 @@ func deplete_ore_tile(tile_pos: Vector2i) -> void:
 		team_lookup.erase(tile_pos)
 		_revealed_ore_tiles_by_team[team] = team_lookup
 	ore_depleted.emit(tile_pos)
+	_rebuild_current_fog_vision_target()
+	_rebuild_fog_mask()
 
 func reveal_ore_from_exposed_tile(tile_pos: Vector2i, team: int) -> Array[Vector2i]:
 	var newly_revealed: Array[Vector2i] = []
@@ -656,8 +917,16 @@ func _get_team_bounds(team: int) -> Rect2i:
 
 func _build_terrain() -> void:
 	_resolved_terrain_seed = _resolve_terrain_seed()
+	_exact_surface_profile_active = false
 	_heightmap = _generate_heightmap(_resolved_terrain_seed)
 	_gold_tiles = _generate_gold_tiles(_resolved_terrain_seed)
+	_reset_terrain_runtime_state()
+	_populate_terrain_tiles()
+	clear_mining_selection_visuals()
+	clear_harvest_queue_overlay()
+	_rebuild_fog_mask()
+
+func _reset_terrain_runtime_state() -> void:
 	_tile_health.clear()
 	_ore_health.clear()
 	_depleted_ore_tiles.clear()
@@ -665,7 +934,20 @@ func _build_terrain() -> void:
 		GameState.Team.LEFT: {},
 		GameState.Team.RIGHT: {},
 	}
+	_fog_exploration_images_by_team = {
+		GameState.Team.LEFT: _create_fog_strength_image(),
+		GameState.Team.RIGHT: _create_fog_strength_image(),
+	}
+	_fog_current_sources_by_team = {
+		GameState.Team.LEFT: [],
+		GameState.Team.RIGHT: [],
+	}
+	_fog_current_target_image = _create_fog_strength_image()
+	_fog_current_display_image = _create_fog_strength_image()
+	_fog_current_source_signature = ""
 	tile_map.clear()
+
+func _populate_terrain_tiles() -> void:
 	for x in range(grid_width):
 		var surface_y: int = _get_surface_height(x)
 		for y in range(surface_y, grid_height):
@@ -679,8 +961,6 @@ func _build_terrain() -> void:
 		var tile: Vector2i = raw_tile
 		tile_map.set_cell(RESOURCE_LAYER, tile, 0, TILE_GOLD)
 		_ore_health[tile] = ORE_HEALTH_DEFAULT
-	clear_mining_selection_visuals()
-	clear_harvest_queue_overlay()
 
 func _generate_heightmap(terrain_seed_value: int) -> Array[int]:
 	var heights: Array[int] = []
@@ -725,6 +1005,8 @@ func _smooth_heights(source: Array[int]) -> Array[int]:
 func _get_surface_height(x: int) -> int:
 	if _heightmap.is_empty():
 		return int(clamp(base_surface_height, min_surface_height, max_surface_height))
+	if _exact_surface_profile_active:
+		return int(clamp(_heightmap[x], 0, grid_height - 1))
 	return int(clamp(_heightmap[x], min_surface_height, max_surface_height))
 
 func _get_flat_width() -> int:
@@ -812,16 +1094,17 @@ func _can_place_gold_at(tile: Vector2i, gold_tiles: Dictionary) -> bool:
 	return true
 
 func _ensure_tilemap_layers() -> void:
-	tile_map.z_index = -10
+	tile_map.z_as_relative = false
+	tile_map.z_index = 0
 	while tile_map.get_layers_count() <= MINING_COMMITTED_LAYER_END:
 		tile_map.add_layer(tile_map.get_layers_count())
-	tile_map.set_layer_z_index(TERRAIN_LAYER, 0)
-	tile_map.set_layer_z_index(RESOURCE_LAYER, 1)
-	tile_map.set_layer_z_index(UNDERGROUND_LAYER, 2)
-	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, 3)
-	tile_map.set_layer_z_index(MINING_INVALID_LAYER, 4)
+	tile_map.set_layer_z_index(TERRAIN_LAYER, TERRAIN_RENDER_Z_INDEX)
+	tile_map.set_layer_z_index(RESOURCE_LAYER, RESOURCE_RENDER_Z_INDEX)
+	tile_map.set_layer_z_index(UNDERGROUND_LAYER, UNDERGROUND_RENDER_Z_INDEX)
+	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, MINING_OVERLAY_Z_INDEX)
+	tile_map.set_layer_z_index(MINING_INVALID_LAYER, MINING_OVERLAY_Z_INDEX + 1)
 	for i in range(MAX_MINER_OVERLAY_LAYERS):
-		tile_map.set_layer_z_index(MINING_COMMITTED_LAYER_START + i, 5 + i)
+		tile_map.set_layer_z_index(MINING_COMMITTED_LAYER_START + i, MINING_OVERLAY_Z_INDEX + 2 + i)
 	tile_map.set_layer_modulate(MINING_DRAFT_LAYER, Color(1, 1, 1, MINING_DRAFT_ALPHA))
 	tile_map.set_layer_modulate(MINING_INVALID_LAYER, MINING_INVALID_COLOR)
 	for i in range(MAX_MINER_OVERLAY_LAYERS):
@@ -900,6 +1183,367 @@ func _get_air_connected_selected_tiles(selected_tiles: Dictionary) -> Dictionary
 			connected[neighbor] = true
 			frontier.append(neighbor)
 	return connected
+
+func _ensure_fog_overlay() -> void:
+	if _fog_overlay != null and is_instance_valid(_fog_overlay):
+		return
+	_fog_overlay = get_node_or_null("FogOfWarOverlay") as CanvasItem
+	if _fog_overlay == null:
+		_fog_overlay = FOG_OVERLAY_SCRIPT.new() as CanvasItem
+		_fog_overlay.name = "FogOfWarOverlay"
+		add_child(_fog_overlay)
+	_fog_overlay.z_as_relative = false
+	_fog_overlay.z_index = FOG_OVERLAY_Z_INDEX
+
+func _update_fog_overlay_visibility() -> void:
+	_ensure_fog_overlay()
+	var should_show: bool = _fog_local_team != GameState.Team.NONE
+	if _fog_overlay.has_method("set_fog_texture"):
+		_fog_overlay.set_fog_texture(_fog_mask_texture, get_world_pixel_rect(), should_show)
+
+func _create_fog_strength_image() -> Image:
+	var image_width: int = maxi(1, grid_width * FOG_MASK_PIXELS_PER_TILE)
+	var image_height: int = maxi(1, grid_height * FOG_MASK_PIXELS_PER_TILE)
+	var image := Image.create(image_width, image_height, false, Image.FORMAT_R8)
+	image.fill(Color(0, 0, 0, 1))
+	return image
+
+func _get_or_create_fog_exploration_image(team: int) -> Image:
+	var image := _fog_exploration_images_by_team.get(team) as Image
+	var expected_size := Vector2i(
+		maxi(1, grid_width * FOG_MASK_PIXELS_PER_TILE),
+		maxi(1, grid_height * FOG_MASK_PIXELS_PER_TILE)
+	)
+	if image == null or image.get_size() != expected_size:
+		image = _create_fog_strength_image()
+		_fog_exploration_images_by_team[team] = image
+	return image
+
+func _normalize_fog_source(raw_source: Dictionary, quantize_center: bool = false) -> Dictionary:
+	var center_value: Variant = raw_source.get("center", null)
+	if not center_value is Vector2:
+		return {}
+	var radius_tiles := maxf(0.0, float(raw_source.get("radius_tiles", 0.0)))
+	if radius_tiles <= 0.0:
+		return {}
+	var spacing_tiles := maxf(0.05, float(raw_source.get("stamp_spacing_tiles", 0.25)))
+	var center := center_value as Vector2
+	if quantize_center:
+		var spacing_world := spacing_tiles * float(tile_size)
+		center = center.snapped(Vector2(spacing_world, spacing_world))
+	return {
+		"center": center,
+		"radius_tiles": radius_tiles,
+		"wall_feather_tiles": maxf(0.0, float(raw_source.get("wall_feather_tiles", 1.0))),
+		"edge_feather_tiles": maxf(0.0, float(raw_source.get("edge_feather_tiles", 1.0))),
+		"stamp_spacing_tiles": spacing_tiles,
+	}
+
+func _build_fog_exploration_snapshot(team: int) -> Dictionary:
+	var image := _get_or_create_fog_exploration_image(team)
+	return {
+		"width": image.get_width(),
+		"height": image.get_height(),
+		"data": image.get_data(),
+	}
+
+func _apply_fog_exploration_snapshot(team: int, snapshot: Dictionary) -> void:
+	var width := int(snapshot.get("width", 0))
+	var height := int(snapshot.get("height", 0))
+	var raw_data: Variant = snapshot.get("data", PackedByteArray())
+	if width <= 0 or height <= 0 or not raw_data is PackedByteArray:
+		return
+	if width != grid_width * FOG_MASK_PIXELS_PER_TILE \
+			or height != grid_height * FOG_MASK_PIXELS_PER_TILE:
+		return
+	var data := raw_data as PackedByteArray
+	if data.size() != width * height:
+		return
+	_fog_exploration_images_by_team[team] = Image.create_from_data(
+		width,
+		height,
+		false,
+		Image.FORMAT_R8,
+		data
+	)
+	if team == _fog_local_team:
+		_rebuild_fog_mask()
+
+func _rebuild_current_fog_vision_target() -> void:
+	if _fog_local_team == GameState.Team.NONE:
+		_fog_current_target_image = _create_fog_strength_image()
+		return
+	_fog_current_target_image = _build_fog_vision_image(
+		_fog_current_sources_by_team.get(_fog_local_team, [])
+	)
+
+func _build_fog_vision_image(sources: Array) -> Image:
+	var image := _create_fog_strength_image()
+	for raw_source in sources:
+		if not raw_source is Dictionary:
+			continue
+		var source := _normalize_fog_source(raw_source as Dictionary)
+		if source.is_empty():
+			continue
+		_stamp_fog_vision_image(image, source, _get_connected_air_lookup_for_source(source))
+	return image
+
+func _stamp_fog_vision_image(
+	image: Image,
+	source: Dictionary,
+	connected_air: Dictionary
+) -> bool:
+	if image == null or connected_air.is_empty():
+		return false
+	var center: Vector2 = source["center"]
+	var radius_world := float(source["radius_tiles"]) * float(tile_size)
+	var edge_world := float(source["edge_feather_tiles"]) * float(tile_size)
+	var wall_world := float(source["wall_feather_tiles"]) * float(tile_size)
+	var extent := radius_world + edge_world * 0.5 + wall_world
+	var min_pixel := _world_to_fog_mask_pixel(center - Vector2.ONE * extent)
+	var max_pixel := _world_to_fog_mask_pixel(center + Vector2.ONE * extent)
+	min_pixel.x = clampi(min_pixel.x, 0, image.get_width() - 1)
+	min_pixel.y = clampi(min_pixel.y, 0, image.get_height() - 1)
+	max_pixel.x = clampi(max_pixel.x, 0, image.get_width() - 1)
+	max_pixel.y = clampi(max_pixel.y, 0, image.get_height() - 1)
+	var changed := false
+	for pixel_x in range(min_pixel.x, max_pixel.x + 1):
+		for pixel_y in range(min_pixel.y, max_pixel.y + 1):
+			var pixel := Vector2i(pixel_x, pixel_y)
+			var world_pos := _fog_mask_pixel_to_world(pixel)
+			var tile_pos := world_to_tile(world_pos)
+			if not _is_underground_fog_candidate(tile_pos):
+				continue
+			var strength := 0.0
+			if _is_underground_air_fog_candidate(tile_pos) and connected_air.has(tile_pos):
+				strength = _get_fog_source_circle_strength(world_pos, source)
+			elif has_ground_at_tile(tile_pos):
+				strength = _get_fog_wall_strength(world_pos, source, connected_air)
+			if strength <= image.get_pixelv(pixel).r + 0.001:
+				continue
+			image.set_pixelv(pixel, Color(strength, 0, 0, 1))
+			changed = true
+	return changed
+
+func _get_fog_source_circle_strength(world_pos: Vector2, source: Dictionary) -> float:
+	var center: Vector2 = source["center"]
+	var radius := float(source["radius_tiles"]) * float(tile_size)
+	var feather := maxf(1.0, float(source["edge_feather_tiles"]) * float(tile_size))
+	return 1.0 - smoothstep(radius - feather * 0.5, radius + feather * 0.5, world_pos.distance_to(center))
+
+func _get_fog_wall_strength(
+	world_pos: Vector2,
+	source: Dictionary,
+	connected_air: Dictionary
+) -> float:
+	var wall_width := maxf(1.0, float(source["wall_feather_tiles"]) * float(tile_size))
+	var nearest := INF
+	for raw_tile in connected_air.keys():
+		var tile: Vector2i = raw_tile
+		if not _is_underground_air_fog_candidate(tile):
+			continue
+		var rect := Rect2(Vector2(tile * tile_size), Vector2(tile_size, tile_size))
+		var closest := Vector2(
+			clampf(world_pos.x, rect.position.x, rect.end.x),
+			clampf(world_pos.y, rect.position.y, rect.end.y)
+		)
+		nearest = minf(nearest, world_pos.distance_to(closest))
+	if nearest == INF:
+		return 0.0
+	var wall_strength := 1.0 - smoothstep(0.0, wall_width, nearest)
+	return wall_strength * _get_fog_source_circle_strength(world_pos, source)
+
+func _get_connected_air_lookup_for_source(source: Dictionary) -> Dictionary:
+	var center: Vector2 = source["center"]
+	var radius_world := (
+		float(source["radius_tiles"]) + float(source["edge_feather_tiles"]) * 0.5
+	) * float(tile_size)
+	var center_tile := world_to_tile(center)
+	var start_tile := center_tile
+	if not _is_air_tile(start_tile):
+		var nearest_distance := INF
+		for x_offset in range(-1, 2):
+			for y_offset in range(-1, 2):
+				var candidate := center_tile + Vector2i(x_offset, y_offset)
+				if not _is_air_tile(candidate):
+					continue
+				var distance := center.distance_squared_to(tile_to_world_center(candidate))
+				if distance < nearest_distance:
+					nearest_distance = distance
+					start_tile = candidate
+	if not _is_air_tile(start_tile):
+		return {}
+	var connected: Dictionary = {}
+	var frontier: Array[Vector2i] = [start_tile]
+	var visited: Dictionary = {start_tile: true}
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		if not _does_tile_intersect_fog_circle(current, center, radius_world):
+			continue
+		connected[current] = true
+		for direction in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
+			var neighbor: Vector2i = current + direction
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			if _is_air_tile(neighbor) \
+					and _does_tile_intersect_fog_circle(neighbor, center, radius_world):
+				frontier.append(neighbor)
+	return connected
+
+func _update_fog_vision_transition(delta: float) -> void:
+	if _fog_local_team == GameState.Team.NONE \
+			or _fog_current_target_image == null \
+			or _fog_current_display_image == null:
+		return
+	var changed := false
+	for pixel_x in range(_fog_current_display_image.get_width()):
+		for pixel_y in range(_fog_current_display_image.get_height()):
+			var pixel := Vector2i(pixel_x, pixel_y)
+			var current := _fog_current_display_image.get_pixelv(pixel).r
+			var target := _fog_current_target_image.get_pixelv(pixel).r
+			if is_equal_approx(current, target):
+				continue
+			var duration := fog_vision_appear_duration_sec if target > current \
+				else fog_vision_recede_duration_sec
+			var next_value := move_toward(current, target, delta / maxf(0.01, duration))
+			_fog_current_display_image.set_pixelv(pixel, Color(next_value, 0, 0, 1))
+			changed = true
+	if changed:
+		_rebuild_fog_mask()
+
+func _compose_fog_alpha(explored: float, current: float) -> float:
+	var inactive_alpha := lerpf(1.0, fog_explored_opacity, clampf(explored, 0.0, 1.0))
+	return inactive_alpha * (1.0 - clampf(current, 0.0, 1.0))
+
+func _sample_fog_strength_image(image: Image, world_pos: Vector2) -> float:
+	if image == null:
+		return 0.0
+	var mask_scale := float(FOG_MASK_PIXELS_PER_TILE) / float(tile_size)
+	var sample_pos := world_pos * mask_scale - Vector2(0.5, 0.5)
+	var pixel_min := Vector2i(floor(sample_pos.x), floor(sample_pos.y))
+	var blend := Vector2(sample_pos.x - pixel_min.x, sample_pos.y - pixel_min.y)
+	var pixel_max := pixel_min + Vector2i.ONE
+	pixel_min.x = clampi(pixel_min.x, 0, image.get_width() - 1)
+	pixel_min.y = clampi(pixel_min.y, 0, image.get_height() - 1)
+	pixel_max.x = clampi(pixel_max.x, 0, image.get_width() - 1)
+	pixel_max.y = clampi(pixel_max.y, 0, image.get_height() - 1)
+	var top := lerpf(
+		image.get_pixelv(pixel_min).r,
+		image.get_pixel(pixel_max.x, pixel_min.y).r,
+		blend.x
+	)
+	var bottom := lerpf(
+		image.get_pixel(pixel_min.x, pixel_max.y).r,
+		image.get_pixelv(pixel_max).r,
+		blend.x
+	)
+	return lerpf(top, bottom, blend.y)
+
+func _world_to_fog_mask_pixel(world_pos: Vector2) -> Vector2i:
+	var mask_scale := float(FOG_MASK_PIXELS_PER_TILE) / float(tile_size)
+	return Vector2i(floor(world_pos.x * mask_scale), floor(world_pos.y * mask_scale))
+
+func _rebuild_fog_mask() -> void:
+	_ensure_fog_overlay()
+	var image_width: int = maxi(1, grid_width * FOG_MASK_PIXELS_PER_TILE)
+	var image_height: int = maxi(1, grid_height * FOG_MASK_PIXELS_PER_TILE)
+	_fog_mask_image = Image.create(image_width, image_height, false, Image.FORMAT_RGBA8)
+	_fog_mask_image.fill(Color(0, 0, 0, 0))
+	if _fog_local_team != GameState.Team.NONE:
+		var exploration := _get_or_create_fog_exploration_image(_fog_local_team)
+		if _fog_current_display_image == null:
+			_fog_current_display_image = _create_fog_strength_image()
+		for pixel_x in range(image_width):
+			for pixel_y in range(image_height):
+				var pixel := Vector2i(pixel_x, pixel_y)
+				var tile_pos := world_to_tile(_fog_mask_pixel_to_world(pixel))
+				if not _is_underground_fog_candidate(tile_pos):
+					continue
+				var alpha := _compose_fog_alpha(
+					exploration.get_pixelv(pixel).r,
+					_fog_current_display_image.get_pixelv(pixel).r
+				)
+				_fog_mask_image.set_pixelv(pixel, Color(0, 0, 0, alpha))
+	if _fog_mask_texture == null \
+			or _fog_mask_texture.get_width() != image_width \
+			or _fog_mask_texture.get_height() != image_height:
+		_fog_mask_texture = ImageTexture.create_from_image(_fog_mask_image)
+	else:
+		_fog_mask_texture.update(_fog_mask_image)
+	_update_fog_overlay_visibility()
+
+func _fog_mask_pixel_to_world(pixel_pos: Vector2i) -> Vector2:
+	var world_pixels_per_mask_pixel := float(tile_size) / float(FOG_MASK_PIXELS_PER_TILE)
+	return (Vector2(pixel_pos) + Vector2(0.5, 0.5)) * world_pixels_per_mask_pixel
+
+func _get_fog_mask_alpha_at_world(world_pos: Vector2) -> float:
+	if _fog_mask_image == null:
+		return 0.0
+	var mask_scale := float(FOG_MASK_PIXELS_PER_TILE) / float(tile_size)
+	var pixel_pos := Vector2i(floor(world_pos.x * mask_scale), floor(world_pos.y * mask_scale))
+	pixel_pos.x = clampi(pixel_pos.x, 0, _fog_mask_image.get_width() - 1)
+	pixel_pos.y = clampi(pixel_pos.y, 0, _fog_mask_image.get_height() - 1)
+	return _fog_mask_image.get_pixelv(pixel_pos).a
+
+func _apply_revealed_fog_tiles_for_team(
+	team: int,
+	tiles: Array,
+	rebuild_if_local: bool = true
+) -> Array[Vector2i]:
+	if team == GameState.Team.NONE:
+		return []
+	var image := _get_or_create_fog_exploration_image(team)
+	var newly_revealed: Array[Vector2i] = []
+	for raw_tile in tiles:
+		if not raw_tile is Vector2i:
+			continue
+		var tile: Vector2i = raw_tile
+		if not _is_fog_reveal_candidate(tile):
+			continue
+		if is_fog_revealed_to_team(tile, team):
+			continue
+		var rect := Rect2i(
+			tile * FOG_MASK_PIXELS_PER_TILE,
+			Vector2i(FOG_MASK_PIXELS_PER_TILE, FOG_MASK_PIXELS_PER_TILE)
+		)
+		_fill_rect(image, rect, Color(1, 0, 0, 1))
+		newly_revealed.append(tile)
+	if rebuild_if_local and not newly_revealed.is_empty() and team == _fog_local_team:
+		_rebuild_fog_mask()
+	return newly_revealed
+
+func _does_tile_intersect_fog_circle(
+	tile_pos: Vector2i,
+	center_world: Vector2,
+	radius_world: float
+) -> bool:
+	var rect := Rect2(Vector2(tile_pos * tile_size), Vector2(tile_size, tile_size))
+	var closest := Vector2(
+		clampf(center_world.x, rect.position.x, rect.end.x),
+		clampf(center_world.y, rect.position.y, rect.end.y)
+	)
+	return center_world.distance_squared_to(closest) <= radius_world * radius_world
+
+func _is_underground_fog_candidate(tile_pos: Vector2i) -> bool:
+	if not is_tile_in_bounds(tile_pos):
+		return false
+	if tile_pos.y <= _get_surface_height(tile_pos.x):
+		return false
+	return has_ground_at_tile(tile_pos) or is_underground_tile(tile_pos)
+
+func _is_underground_air_fog_candidate(tile_pos: Vector2i) -> bool:
+	if not is_tile_in_bounds(tile_pos):
+		return false
+	if tile_pos.y <= _get_surface_height(tile_pos.x):
+		return false
+	return not has_ground_at_tile(tile_pos) and is_underground_tile(tile_pos)
+
+func _is_air_tile(tile_pos: Vector2i) -> bool:
+	return is_tile_in_bounds(tile_pos) and not has_ground_at_tile(tile_pos)
+
+func _is_fog_reveal_candidate(tile_pos: Vector2i) -> bool:
+	return _is_underground_fog_candidate(tile_pos) or is_underground_tile(tile_pos)
 
 func _reconstruct_path(previous: Dictionary, start_tile: Vector2i, goal_tile: Vector2i) -> Array[Vector2i]:
 	var path: Array[Vector2i] = [goal_tile]

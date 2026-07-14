@@ -8,3 +8,4 @@ func _init() -> void:
 	health = 25
 	damage = 2
 	defense = 0
+	vision_radius_tiles = 5.0

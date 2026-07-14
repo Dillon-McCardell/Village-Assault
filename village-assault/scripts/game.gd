@@ -67,8 +67,13 @@ var _miner_colors: Dictionary = {}
 var _stroke_toggled_tiles: Dictionary = {}
 var _selection_drag_active: bool = false
 var _stroke_select_mode: Variant = null
+var _fog_reveal_scan_remaining: float = 0.0
+var _fog_vision_refresh_remaining: float = 0.0
 
 const MAX_MINERS_PER_PLAYER: int = 6
+const FOG_REVEAL_SCAN_INTERVAL_SEC: float = 0.15
+const FOG_VISION_REFRESH_INTERVAL_SEC: float = 0.05
+const TROOP_VISIBILITY_FADE_DURATION_SEC: float = 0.2
 const MINER_COLOR_PALETTE: Array[Color] = [
 	Color(0.20, 0.70, 0.90, 1.0),
 	Color(0.95, 0.45, 0.75, 1.0),
@@ -95,12 +100,17 @@ func _get_local_peer_id_or_default(default_value: int = 0) -> int:
 		return default_value
 	return multiplayer.get_unique_id()
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	_process_spawn_queue()
 	_prune_dead_miner_state()
+	_process_troop_fog_reveal(delta)
+	_refresh_local_fog_vision(delta)
+	_refresh_troop_fog_visibility(delta)
 
 func _ready() -> void:
 	GameState.set_current_scene("game")
+	units_root.z_as_relative = false
+	units_root.z_index = 30
 	_configure_troop_spawner()
 
 	_disconnect_overlay = _disconnect_overlay_scene.instantiate()
@@ -116,6 +126,7 @@ func _ready() -> void:
 	territory_manager.tile_destroyed.connect(_on_territory_tile_destroyed)
 	territory_manager.ore_revealed_for_team.connect(_on_ore_revealed_for_team)
 	territory_manager.ore_depleted.connect(_on_ore_depleted)
+	territory_manager.fog_revealed_for_team.connect(_on_fog_revealed_for_team)
 
 	NetworkManager.server_disconnected.connect(_on_server_disconnected_game)
 	NetworkManager.reconnect_succeeded.connect(_on_reconnect_succeeded_game)
@@ -143,6 +154,7 @@ func _ready() -> void:
 		camera.zoom_changed.connect(_on_camera_zoom_changed)
 	_update_status()
 	_update_camera_limits()
+	territory_manager.set_fog_local_team(GameState.local_team)
 	_refresh_mining_selection_visuals()
 	DebugConsole.set_label(debug_overlay)
 	DebugConsole.log_msg("Game ready. is_server=%s" % str(_is_multiplayer_server()))
@@ -183,11 +195,16 @@ func _update_status() -> void:
 
 func _on_local_state_updated(_team: int, _money: int) -> void:
 	_update_status()
+	territory_manager.set_fog_local_team(_team)
+	_fog_vision_refresh_remaining = 0.0
+	_refresh_local_fog_vision(FOG_VISION_REFRESH_INTERVAL_SEC)
+	_refresh_troop_fog_visibility(TROOP_VISIBILITY_FADE_DURATION_SEC)
 	if _team != GameState.Team.NONE and (not _camera_anchor_initialized or _team != _anchored_team):
 		_update_camera_anchor()
 
 func _on_world_settings_updated(_map_width: int, _map_height: int, _map_seed: int) -> void:
 	_update_camera_limits()
+	territory_manager.set_fog_local_team(GameState.local_team)
 	if GameState.local_team != GameState.Team.NONE and not _camera_anchor_initialized:
 		_update_camera_anchor()
 	_refresh_mining_selection_visuals()
@@ -276,7 +293,7 @@ func get_unit_by_id(unit_id: int) -> Node2D:
 
 func get_local_miners() -> Array:
 	var miners: Array = []
-	for child in units_root.get_children():
+	for child in _get_fog_vision_source_nodes():
 		if child == null or not is_instance_valid(child):
 			continue
 		if not child.has_method("get_unit_id") or not child.has_method("get_team"):
@@ -458,18 +475,37 @@ func _on_ore_depleted(tile_pos: Vector2i) -> void:
 		return
 	_sync_depleted_ore.rpc(tile_pos.x, tile_pos.y)
 
+func _on_fog_revealed_for_team(team: int, tiles: Array, circles: Array = []) -> void:
+	if not _is_multiplayer_server():
+		return
+	var peer_id := GameState.get_peer_id_for_team(team)
+	if peer_id <= 0:
+		return
+	if peer_id == _get_local_peer_id_or_default(1):
+		return
+	_sync_revealed_fog.rpc_id(peer_id, team, tiles, circles)
+
 func _sync_world_state_to_peer(peer_id: int) -> void:
 	if not _is_multiplayer_server() or territory_manager == null or peer_id <= 0:
 		return
 	var destroyed_tiles := territory_manager.get_destroyed_terrain_tiles()
 	var depleted_ore_tiles := territory_manager.get_depleted_ore_tiles()
 	var revealed_snapshot := territory_manager.get_revealed_ore_snapshot()
+	var revealed_fog_snapshot := territory_manager.get_revealed_fog_snapshot_for_team(
+		GameState.get_team_for_peer(peer_id)
+	)
 	DebugConsole.log_msg("MiningRPC: replay_world_state peer=%d destroyed=%d depleted_ore=%d" % [
 		peer_id,
 		destroyed_tiles.size(),
 		depleted_ore_tiles.size(),
 	])
-	_sync_world_state_snapshot.rpc_id(peer_id, destroyed_tiles, depleted_ore_tiles, revealed_snapshot)
+	_sync_world_state_snapshot.rpc_id(
+		peer_id,
+		destroyed_tiles,
+		depleted_ore_tiles,
+		revealed_snapshot,
+		revealed_fog_snapshot
+	)
 
 @rpc("authority", "reliable", "call_local")
 func _sync_destroyed_tile(tile_x: int, tile_y: int) -> void:
@@ -484,16 +520,32 @@ func _sync_revealed_ore(team: int, tiles: Array) -> void:
 	territory_manager.reveal_ore_tiles_for_team(team, _typed_tile_array(tiles))
 
 @rpc("authority", "reliable", "call_local")
+func _sync_revealed_fog(team: int, tiles: Array, circles: Array = []) -> void:
+	if territory_manager == null:
+		return
+	territory_manager.apply_revealed_fog_delta_for_team(team, _typed_tile_array(tiles), circles)
+
+@rpc("authority", "reliable", "call_local")
 func _sync_depleted_ore(tile_x: int, tile_y: int) -> void:
 	if territory_manager == null:
 		return
 	territory_manager.deplete_ore_tile(Vector2i(tile_x, tile_y))
 
 @rpc("authority", "reliable")
-func _sync_world_state_snapshot(destroyed_tiles: Array, depleted_ore_tiles: Array, revealed_snapshot: Dictionary) -> void:
+func _sync_world_state_snapshot(
+	destroyed_tiles: Array,
+	depleted_ore_tiles: Array,
+	revealed_snapshot: Dictionary,
+	revealed_fog_snapshot: Dictionary = {}
+) -> void:
 	if territory_manager == null:
 		return
-	territory_manager.apply_world_state_snapshot(destroyed_tiles, depleted_ore_tiles, revealed_snapshot)
+	territory_manager.apply_world_state_snapshot(
+		destroyed_tiles,
+		depleted_ore_tiles,
+		revealed_snapshot,
+		revealed_fog_snapshot
+	)
 
 @rpc("any_peer", "reliable")
 func _request_assign_miner_job(unit_id: int, job_payload: Dictionary) -> void:
@@ -550,6 +602,106 @@ func _has_any_committed_mining_assignments() -> bool:
 		if int(job.get("job_type", MinerJobType.IDLE)) != MinerJobType.IDLE:
 			return true
 	return false
+
+func _process_troop_fog_reveal(delta: float) -> void:
+	if not _is_multiplayer_server() or territory_manager == null:
+		return
+	_fog_reveal_scan_remaining -= delta
+	if _fog_reveal_scan_remaining > 0.0:
+		return
+	_fog_reveal_scan_remaining = FOG_REVEAL_SCAN_INTERVAL_SEC
+	for child in units_root.get_children():
+		if child == null or not is_instance_valid(child):
+			continue
+		if not child is Node2D:
+			continue
+		if not child.has_method("get_team"):
+			continue
+		if child.has_method("is_alive") and not child.is_alive():
+			continue
+		var team := int(child.get_team())
+		if team == GameState.Team.NONE:
+			continue
+		var source := _get_troop_vision_source(child)
+		if source.is_empty():
+			continue
+		territory_manager.reveal_fog_from_source_for_team(team, source)
+
+func _refresh_local_fog_vision(delta: float) -> void:
+	if territory_manager == null or units_root == null:
+		return
+	_fog_vision_refresh_remaining -= delta
+	if _fog_vision_refresh_remaining > 0.0:
+		return
+	_fog_vision_refresh_remaining = FOG_VISION_REFRESH_INTERVAL_SEC
+	var local_team := GameState.local_team
+	var sources: Array = []
+	if local_team != GameState.Team.NONE:
+		for child in _get_fog_vision_source_nodes():
+			if child == null or not is_instance_valid(child):
+				continue
+			if not child.has_method("get_team") or int(child.get_team()) != local_team:
+				continue
+			if child.has_method("is_alive") and not child.is_alive():
+				continue
+			var source := _get_troop_vision_source(child)
+			if not source.is_empty():
+				sources.append(source)
+	territory_manager.set_current_fog_vision_sources_for_team(local_team, sources)
+
+func _get_fog_vision_source_nodes() -> Array[Node]:
+	var source_nodes: Array[Node] = []
+	for raw_node in get_tree().get_nodes_in_group(VisionComponent.VISION_SOURCE_GROUP):
+		var source_node := raw_node as Node
+		if source_node != null and is_ancestor_of(source_node):
+			source_nodes.append(source_node)
+	for child in units_root.get_children():
+		if child is Node and not source_nodes.has(child):
+			source_nodes.append(child)
+	return source_nodes
+
+func _get_troop_vision_source(troop: Node) -> Dictionary:
+	if troop == null:
+		return {}
+	var vision_component := troop.get_node_or_null("VisionComponent") as VisionComponent
+	if vision_component != null:
+		return vision_component.get_vision_source()
+	if troop.has_method("get_vision_source"):
+		var source: Variant = troop.get_vision_source()
+		return source if source is Dictionary else {}
+	return {}
+
+func _refresh_troop_fog_visibility(delta: float) -> void:
+	if territory_manager == null or units_root == null:
+		return
+	var local_team := GameState.local_team
+	for child in units_root.get_children():
+		if child == null or not is_instance_valid(child):
+			continue
+		if not child is Node2D:
+			continue
+		if not child.has_method("get_team"):
+			continue
+		var troop_team := int(child.get_team())
+		var target_alpha := 1.0
+		if local_team != GameState.Team.NONE and troop_team != local_team:
+			var sample_position := (child as Node2D).position
+			var raw_height: Variant = child.get("unit_height")
+			var height := float(raw_height) if raw_height != null else 0.0
+			if height > 0.0:
+				sample_position.y -= height * 0.5
+			target_alpha = smoothstep(0.15, 0.6, territory_manager.get_current_fog_visibility_at_world_position(
+				sample_position,
+				local_team
+			))
+		if target_alpha > 0.0:
+			child.visible = true
+		var fade_step := delta / TROOP_VISIBILITY_FADE_DURATION_SEC
+		var child_modulate: Color = child.modulate
+		child_modulate.a = move_toward(child_modulate.a, target_alpha, fade_step)
+		child.modulate = child_modulate
+		if child_modulate.a <= 0.001 and target_alpha <= 0.0:
+			child.visible = false
 
 @rpc("any_peer", "reliable")
 func request_spawn_test_unit() -> void:
@@ -613,6 +765,9 @@ func _initialize_spawned_unit(
 		)
 	elif unit.has_method("initialize_from_spawn_payload"):
 		unit.initialize_from_spawn_payload(spawn_payload)
+	var vision_component := unit.get_node_or_null("VisionComponent") as VisionComponent
+	if vision_component != null:
+		vision_component.configure_from_spawn_payload(spawn_payload)
 
 func _next_available_unit_id() -> int:
 	var unit_id := _next_unit_id
@@ -769,6 +924,7 @@ func get_test_snapshot() -> Dictionary:
 		"destroyed_terrain_tiles": territory_manager.get_destroyed_terrain_tiles() if territory_manager != null else [],
 		"depleted_ore_tiles": territory_manager.get_depleted_ore_tiles() if territory_manager != null else [],
 		"revealed_ore_snapshot": territory_manager.get_revealed_ore_snapshot() if territory_manager != null else {},
+		"revealed_fog_snapshot": territory_manager.get_revealed_fog_snapshot() if territory_manager != null else {},
 	}
 
 func open_miner_picker() -> void:
@@ -904,7 +1060,8 @@ func confirm_mining_selection() -> void:
 	elif _mining_selection_state == MiningSelectionState.SELECTING_HARVEST:
 		committed_job = _build_harvest_job(selected_unit_id, _draft_harvest_order)
 	DebugConsole.log_msg("MiningJob: confirm miner=%d payload=%s" % [selected_unit_id, str(committed_job)])
-	_apply_miner_job(selected_unit_id, committed_job)
+	if not _has_active_multiplayer_peer() or _is_multiplayer_server():
+		_apply_miner_job(selected_unit_id, committed_job)
 	_draft_mining_tiles.clear()
 	_draft_mining_order.clear()
 	_draft_harvest_order.clear()

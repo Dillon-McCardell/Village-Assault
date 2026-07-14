@@ -14,6 +14,12 @@ func _clear_and_fill_ground(manager: TerritoryManager, tiles: Array[Vector2i]) -
 		manager.tile_map.set_cell(manager.TERRAIN_LAYER, tile, 0, manager.TILE_DIRT)
 		manager._tile_health[tile] = manager.TILE_HEALTH_DEFAULT
 
+func _make_underground_air(manager: TerritoryManager, tile: Vector2i) -> void:
+	manager.tile_map.erase_cell(manager.TERRAIN_LAYER, tile)
+	manager.tile_map.erase_cell(manager.RESOURCE_LAYER, tile)
+	manager.tile_map.set_cell(manager.UNDERGROUND_LAYER, tile, 0, manager.TILE_UNDERGROUND)
+	manager._tile_health.erase(tile)
+
 func test_spawn_positions_always_land_inside_team_territory() -> void:
 	_terrain_harness.reset_runtime_state()
 	GameState.set_world_settings(64, 20, 12345)
@@ -243,6 +249,28 @@ func test_mining_selection_layers_render_and_clear_independently() -> void:
 
 	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_DRAFT_LAYER, draft_tile)).is_equal(-1)
 	assert_int(manager.tile_map.get_cell_source_id(manager.MINING_COMMITTED_LAYER, committed_tile)).is_equal(-1)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_mining_selection_layers_render_above_fog_overlay() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 20, 9997)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+
+	assert_int(manager.tile_map.get_layer_z_index(manager.UNDERGROUND_LAYER)).is_less(
+		manager.FOG_OVERLAY_Z_INDEX
+	)
+	assert_int(manager.FOG_OVERLAY_Z_INDEX).is_less(
+		manager.tile_map.get_layer_z_index(manager.MINING_DRAFT_LAYER)
+	)
+	assert_int(manager.FOG_OVERLAY_Z_INDEX).is_less(
+		manager.tile_map.get_layer_z_index(manager.MINING_INVALID_LAYER)
+	)
+	assert_int(manager.FOG_OVERLAY_Z_INDEX).is_less(
+		manager.tile_map.get_layer_z_index(manager.MINING_COMMITTED_LAYER_START)
+	)
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
@@ -570,6 +598,323 @@ func test_world_state_snapshot_reapplies_destroyed_tiles_depleted_ore_and_reveal
 	assert_bool(manager.has_ground_at_tile(terrain_tile)).is_false()
 	assert_bool(manager.is_ore_tile(ore_tile)).is_false()
 	assert_bool(manager.is_ore_revealed_to_team(ore_tile, GameState.Team.LEFT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_reveal_state_resets_per_team_after_terrain_rebuild() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10006)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var tile := Vector2i(12, manager._get_surface_height(12) + 2)
+
+	manager.reveal_fog_tiles_for_team(GameState.Team.LEFT, [tile])
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_true()
+
+	manager._build_terrain()
+
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_false()
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.RIGHT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_reveal_is_team_specific() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10007)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var tile := Vector2i(12, manager._get_surface_height(12) + 2)
+
+	var revealed := manager.reveal_fog_tiles_for_team(GameState.Team.LEFT, [tile])
+
+	assert_array(revealed).is_equal([tile])
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.RIGHT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_circle_reveal_includes_radius_three_and_excludes_radius_four() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10008)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	for x_offset in range(-4, 5):
+		for y_offset in range(-4, 5):
+			_make_underground_air(manager, center + Vector2i(x_offset, y_offset))
+
+	manager.reveal_fog_circle_for_team(GameState.Team.LEFT, center)
+
+	assert_bool(manager.is_fog_revealed_to_team(center, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(center + Vector2i(3, 0), GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(center + Vector2i(2, 2), GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(center + Vector2i(4, 0), GameState.Team.LEFT)).is_false()
+	assert_bool(manager.is_fog_revealed_to_team(center + Vector2i(3, 3), GameState.Team.LEFT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_circle_reveal_does_not_cross_ground_into_disconnected_air() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10018)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	var disconnected_air := center + Vector2i(2, 0)
+	_make_underground_air(manager, center)
+	_make_underground_air(manager, disconnected_air)
+
+	manager.reveal_fog_circle_for_team(GameState.Team.LEFT, center)
+
+	assert_bool(manager.is_fog_revealed_to_team(center, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(disconnected_air, GameState.Team.LEFT)).is_false()
+	assert_float(manager.get_fog_alpha_at_world_position(
+		manager.tile_to_world_center(disconnected_air),
+		GameState.Team.LEFT
+	)).is_equal_approx(1.0, 0.001)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_circle_reveal_feathers_into_adjacent_ground_walls() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10011)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	var ground_in_radius := center + Vector2i(1, 0)
+	_make_underground_air(manager, center)
+	assert_bool(manager.has_ground_at_tile(ground_in_radius)).is_true()
+
+	manager.reveal_fog_circle_for_team(GameState.Team.LEFT, center)
+
+	assert_bool(manager.is_fog_revealed_to_team(center, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(ground_in_radius, GameState.Team.LEFT)).is_true()
+	assert_float(manager.get_fog_alpha_at_world_position(
+		manager.tile_to_world_center(ground_in_radius),
+		GameState.Team.LEFT
+	)).is_between(0.69, 1.0)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_exploration_raster_tracks_subtile_troop_movement() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10019)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	for x_offset in range(-4, 6):
+		for y_offset in range(-3, 4):
+			_make_underground_air(manager, center + Vector2i(x_offset, y_offset))
+	var center_world := manager.tile_to_world_center(center)
+	var moved_world := center_world + Vector2(float(manager.tile_size) * 0.8, 0.0)
+	var newly_reached_tile := center + Vector2i(4, 0)
+
+	manager.reveal_fog_circle_at_world_for_team(GameState.Team.LEFT, center_world)
+	assert_bool(manager.is_fog_revealed_to_team(newly_reached_tile, GameState.Team.LEFT)).is_false()
+	manager.reveal_fog_circle_at_world_for_team(GameState.Team.LEFT, moved_world)
+
+	var snapshot := manager.get_revealed_fog_snapshot_for_team(GameState.Team.LEFT)
+	var exploration: Dictionary = snapshot[GameState.Team.LEFT]
+	assert_bool(manager.is_fog_revealed_to_team(newly_reached_tile, GameState.Team.LEFT)).is_true()
+	assert_int(exploration.get("width", 0)).is_equal(manager.grid_width * manager.FOG_MASK_PIXELS_PER_TILE)
+	assert_int((exploration.get("data", PackedByteArray()) as PackedByteArray).size()).is_equal(
+		manager.grid_width * manager.grid_height * manager.FOG_MASK_PIXELS_PER_TILE \
+			* manager.FOG_MASK_PIXELS_PER_TILE
+	)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_snapshot_round_trips_through_world_state_snapshot() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10009)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var left_tile := Vector2i(12, manager._get_surface_height(12) + 2)
+	var right_tile := Vector2i(18, manager._get_surface_height(18) + 3)
+	manager.reveal_fog_tiles_for_team(GameState.Team.LEFT, [left_tile])
+	manager.reveal_fog_tiles_for_team(GameState.Team.RIGHT, [right_tile])
+	var fog_snapshot := manager.get_revealed_fog_snapshot()
+
+	manager._build_terrain()
+	assert_bool(manager.is_fog_revealed_to_team(left_tile, GameState.Team.LEFT)).is_false()
+	assert_bool(manager.is_fog_revealed_to_team(right_tile, GameState.Team.RIGHT)).is_false()
+
+	manager.apply_world_state_snapshot([], [], {}, fog_snapshot)
+
+	assert_bool(manager.is_fog_revealed_to_team(left_tile, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(right_tile, GameState.Team.RIGHT)).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_snapshot_for_team_excludes_other_team_reveals() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10014)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var left_tile := Vector2i(12, manager._get_surface_height(12) + 2)
+	var right_tile := Vector2i(18, manager._get_surface_height(18) + 3)
+	manager.reveal_fog_tiles_for_team(GameState.Team.LEFT, [left_tile])
+	manager.reveal_fog_tiles_for_team(GameState.Team.RIGHT, [right_tile])
+
+	var left_snapshot := manager.get_revealed_fog_snapshot_for_team(GameState.Team.LEFT)
+
+	assert_bool(left_snapshot.has(GameState.Team.LEFT)).is_true()
+	assert_bool(left_snapshot.has(GameState.Team.RIGHT)).is_false()
+	assert_bool(left_snapshot[GameState.Team.LEFT].get("data", PackedByteArray()) is PackedByteArray).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_terrain_changes_do_not_explore_fog_for_either_team() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(24, 20, 10016)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var dug_tile := Vector2i(12, manager._get_surface_height(12) + 4)
+
+	manager.destroy_tile(dug_tile)
+
+	assert_bool(manager.is_fog_revealed_to_team(dug_tile, GameState.Team.LEFT)).is_false()
+	assert_bool(manager.is_fog_revealed_to_team(dug_tile, GameState.Team.RIGHT)).is_false()
+	assert_float(manager.get_fog_alpha_at_world_position(
+		manager.tile_to_world_center(dug_tile),
+		GameState.Team.RIGHT
+	)).is_equal_approx(1.0, 0.001)
+
+	manager.reveal_fog_circle_for_team(GameState.Team.LEFT, dug_tile)
+
+	assert_bool(manager.is_fog_revealed_to_team(dug_tile, GameState.Team.LEFT)).is_true()
+	assert_bool(manager.is_fog_revealed_to_team(dug_tile, GameState.Team.RIGHT)).is_false()
+	assert_float(manager.get_fog_alpha_at_world_position(
+		manager.tile_to_world_center(dug_tile),
+		GameState.Team.RIGHT
+	)).is_equal_approx(1.0, 0.001)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_fog_composes_unexplored_explored_and_current_vision_states() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(24, 20, 10010)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	for x_offset in range(-4, 5):
+		for y_offset in range(-4, 5):
+			_make_underground_air(manager, center + Vector2i(x_offset, y_offset))
+	var center_world := manager.tile_to_world_center(center)
+	var source := {
+		"center": center_world,
+		"radius_tiles": 3.0,
+		"wall_feather_tiles": 1.0,
+		"edge_feather_tiles": 1.0,
+		"stamp_spacing_tiles": 0.25,
+	}
+	manager.set_fog_local_team(GameState.Team.LEFT)
+
+	assert_float(manager._get_fog_mask_alpha_at_world(center_world)).is_equal_approx(1.0, 0.001)
+
+	manager.reveal_fog_from_source_for_team(GameState.Team.LEFT, source)
+	assert_float(manager._get_fog_mask_alpha_at_world(center_world)).is_equal_approx(
+		manager.fog_explored_opacity,
+		0.01
+	)
+
+	manager.set_current_fog_vision_sources_for_team(GameState.Team.LEFT, [source])
+	manager._update_fog_vision_transition(1.0)
+	assert_float(manager._get_fog_mask_alpha_at_world(center_world)).is_less(0.01)
+
+	manager.set_current_fog_vision_sources_for_team(GameState.Team.LEFT, [])
+	manager._update_fog_vision_transition(1.0)
+	assert_float(manager._get_fog_mask_alpha_at_world(center_world)).is_equal_approx(
+		manager.fog_explored_opacity,
+		0.01
+	)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_current_fog_vision_has_a_smooth_circular_edge() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(24, 20, 10015)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 6)
+	for x_offset in range(-6, 7):
+		for y_offset in range(-6, 7):
+			_make_underground_air(manager, center + Vector2i(x_offset, y_offset))
+	var center_world := manager.tile_to_world_center(center)
+	var source := {
+		"center": center_world,
+		"radius_tiles": 3.0,
+		"wall_feather_tiles": 1.0,
+		"edge_feather_tiles": 1.0,
+	}
+	manager.set_fog_local_team(GameState.Team.LEFT)
+	manager.set_current_fog_vision_sources_for_team(GameState.Team.LEFT, [source])
+
+	var inside := manager.get_current_fog_visibility_at_world_position(
+		center_world + Vector2(manager.tile_size * 2.4, 0.0),
+		GameState.Team.LEFT
+	)
+	var edge_axis := manager.get_current_fog_visibility_at_world_position(
+		center_world + Vector2(manager.tile_size * 3.0, 0.0),
+		GameState.Team.LEFT
+	)
+	var diagonal_offset := manager.tile_size * 3.0 / sqrt(2.0)
+	var edge_diagonal := manager.get_current_fog_visibility_at_world_position(
+		center_world + Vector2(diagonal_offset, diagonal_offset),
+		GameState.Team.LEFT
+	)
+	var outside := manager.get_current_fog_visibility_at_world_position(
+		center_world + Vector2(manager.tile_size * 3.6, 0.0),
+		GameState.Team.LEFT
+	)
+
+	assert_float(inside).is_greater(edge_axis)
+	assert_float(edge_axis).is_greater(outside)
+	assert_float(edge_axis).is_between(0.25, 0.75)
+	assert_float(edge_diagonal).is_equal_approx(edge_axis, 0.15)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_current_fog_vision_feathers_one_block_into_cavern_walls() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(24, 20, 10012)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var center := Vector2i(12, manager._get_surface_height(12) + 5)
+	_make_underground_air(manager, center)
+	var center_world := manager.tile_to_world_center(center)
+	manager.set_fog_local_team(GameState.Team.LEFT)
+	manager.set_current_fog_vision_sources_for_team(GameState.Team.LEFT, [{
+		"center": center_world,
+		"radius_tiles": 3.0,
+		"wall_feather_tiles": 1.0,
+		"edge_feather_tiles": 1.0,
+	}])
+
+	var air_edge_x := center_world.x + manager.tile_size * 0.5
+	var near_wall := manager.get_current_fog_visibility_at_world_position(
+		Vector2(air_edge_x + 1.0, center_world.y),
+		GameState.Team.LEFT
+	)
+	var deep_wall := manager.get_current_fog_visibility_at_world_position(
+		Vector2(air_edge_x + manager.tile_size - 1.0, center_world.y),
+		GameState.Team.LEFT
+	)
+
+	assert_float(near_wall).is_greater(0.7)
+	assert_float(deep_wall).is_less(0.2)
+	assert_float(near_wall).is_greater(deep_wall)
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()

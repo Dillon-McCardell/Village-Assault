@@ -265,6 +265,137 @@ func test_miner_assignment_mines_tile_into_underground_air() -> void:
 	_clear_node(game)
 	_reset_runtime_state()
 
+func test_miner_digging_only_explores_fog_from_the_troop_vision_scan() -> void:
+	var game := _start_host_game()
+	var miner := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
+	var tile := _sample_ground_tile(game, 12, 1)
+	var stand_tile := tile + Vector2i.UP
+	game.territory_manager.destroy_tile(stand_tile)
+	miner.position = game.territory_manager.stand_tile_to_world_position(stand_tile)
+	var dig_order: Array[Vector2i] = [tile]
+	miner.set_miner_job(game._build_dig_job(1, dig_order, false))
+
+	for _i in range(12):
+		miner._physics_process(0.5)
+
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_false()
+	miner.position = game.territory_manager.tile_to_world_center(tile) \
+		+ Vector2(0.0, float(miner.unit_height) * 0.5)
+	game._fog_reveal_scan_remaining = 0.0
+	game._process_troop_fog_reveal(0.2)
+
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_true()
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(tile, GameState.Team.RIGHT)).is_false()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_troop_reveals_radius_three_underground_fog() -> void:
+	var game := _start_host_game()
+	var center := _sample_ground_tile(game, 12, 3)
+	for x_offset in range(5):
+		game.territory_manager.destroy_tile(center + Vector2i(x_offset, 0))
+	game.spawn_test_unit(game.territory_manager.tile_to_world_center(center), GameState.Team.LEFT, 42, game.get_troop_spawn_payload("troop_grunt"))
+	var troop: Node2D = game.get_unit_by_id(42)
+	troop.position = game.territory_manager.tile_to_world_center(center)
+
+	game._physics_process(0.2)
+
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(center, GameState.Team.LEFT)).is_true()
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(center + Vector2i(3, 0), GameState.Team.LEFT)).is_true()
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(center + Vector2i(4, 0), GameState.Team.LEFT)).is_false()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_troop_fog_reveal_does_not_pass_through_ground() -> void:
+	var game := _start_host_game()
+	var center := _sample_ground_tile(game, 12, 3)
+	var ground_tile := center + Vector2i(1, 0)
+	var disconnected_air := center + Vector2i(2, 0)
+	game.territory_manager.destroy_tile(center)
+	game.territory_manager.destroy_tile(disconnected_air)
+	game.spawn_test_unit(game.territory_manager.tile_to_world_center(center), GameState.Team.LEFT, 42, game.get_troop_spawn_payload("troop_grunt"))
+	var troop: Node2D = game.get_unit_by_id(42)
+	troop.position = game.territory_manager.tile_to_world_center(center)
+
+	game._physics_process(0.2)
+
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(center, GameState.Team.LEFT)).is_true()
+	assert_bool(game.territory_manager.has_ground_at_tile(ground_tile)).is_true()
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(ground_tile, GameState.Team.LEFT)).is_true()
+	assert_bool(game.territory_manager.is_fog_revealed_to_team(disconnected_air, GameState.Team.LEFT)).is_false()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_enemy_troop_requires_current_vision_even_in_explored_tunnel() -> void:
+	var game := _start_host_game()
+	var enemy_tile := _sample_ground_tile(game, 12, 3)
+	game.territory_manager.destroy_tile(enemy_tile)
+	game.spawn_test_unit(
+		game.territory_manager.tile_to_world_center(enemy_tile),
+		GameState.Team.RIGHT,
+		43,
+		game.get_troop_spawn_payload("troop_grunt")
+	)
+	var enemy: Node2D = game.get_unit_by_id(43)
+	enemy.position = game.territory_manager.tile_to_world_center(enemy_tile)
+	game._on_local_state_updated(GameState.Team.LEFT, 100)
+
+	game._refresh_troop_fog_visibility(0.2)
+	assert_bool(enemy.visible).is_false()
+
+	game.territory_manager.reveal_fog_circle_for_team(GameState.Team.LEFT, enemy_tile)
+	game._refresh_troop_fog_visibility(0.2)
+	assert_bool(enemy.visible).is_false()
+
+	game.spawn_test_unit(
+		game.territory_manager.tile_to_world_center(enemy_tile),
+		GameState.Team.LEFT,
+		44,
+		game.get_troop_spawn_payload("troop_grunt")
+	)
+	var ally: Node2D = game.get_unit_by_id(44)
+	ally.position = game.territory_manager.tile_to_world_center(enemy_tile)
+	game._fog_vision_refresh_remaining = 0.0
+	game._refresh_local_fog_vision(0.05)
+	game._refresh_troop_fog_visibility(0.2)
+	assert_bool(enemy.visible).is_true()
+	assert_float(enemy.modulate.a).is_equal_approx(1.0, 0.001)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_local_team_change_switches_fog_overlay_team() -> void:
+	var game := _start_host_game()
+
+	game._on_local_state_updated(GameState.Team.LEFT, 100)
+	assert_int(game.territory_manager._fog_local_team).is_equal(GameState.Team.LEFT)
+
+	game._on_local_state_updated(GameState.Team.RIGHT, 100)
+	assert_int(game.territory_manager._fog_local_team).is_equal(GameState.Team.RIGHT)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_game_snapshot_includes_revealed_fog_snapshot() -> void:
+	var game := _start_host_game()
+	var tile := _sample_ground_tile(game, 12, 2)
+	game.territory_manager.reveal_fog_tiles_for_team(GameState.Team.LEFT, [tile])
+
+	var snapshot: Dictionary = game.get_test_snapshot()
+	var revealed_fog_snapshot: Dictionary = snapshot.get("revealed_fog_snapshot", {})
+	var left_snapshot: Dictionary = revealed_fog_snapshot.get(GameState.Team.LEFT, {})
+	var left_data := left_snapshot.get("data", PackedByteArray()) as PackedByteArray
+
+	assert_bool(revealed_fog_snapshot.has(GameState.Team.LEFT)).is_true()
+	assert_int(left_snapshot.get("width", 0)).is_greater(0)
+	assert_int(left_data.size()).is_greater(0)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
 func test_miner_falls_after_destroying_supporting_block() -> void:
 	var game := _start_host_game()
 	var miner := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))

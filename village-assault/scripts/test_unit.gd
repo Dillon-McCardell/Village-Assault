@@ -116,6 +116,15 @@ func initialize_from_spawn_payload(spawn_payload: Dictionary) -> void:
 		max(0, int(spawn_payload.get("defense", 0))),
 		max(0, int(spawn_payload.get("tile_damage", 0)))
 	)
+	var vision_component := get_node_or_null("VisionComponent") as VisionComponent
+	if vision_component != null:
+		vision_component.configure_from_spawn_payload(spawn_payload)
+
+func get_vision_source() -> Dictionary:
+	var vision_component := get_node_or_null("VisionComponent") as VisionComponent
+	if vision_component == null:
+		return {}
+	return vision_component.get_vision_source()
 
 func initialize_runtime_state(health: int, damage_value: int, defense_value: int, tile_damage_value: int = 0) -> void:
 	max_health = max(1, health)

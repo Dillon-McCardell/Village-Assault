@@ -108,9 +108,12 @@ func _generate_seed() -> int:
 func start_host_for_test(port: int) -> void:
 	var map_size := _get_map_size_from_slider()
 	var map_seed_val: int = _generate_seed()
+	start_custom_test_host(port, map_size.x, map_size.y, map_seed_val)
+
+func start_custom_test_host(port: int, map_width: int, map_height: int, map_seed_val: int) -> void:
 	GameState.reset_all()
 	NetworkManager.host(port)
-	GameState.set_world_settings(map_size.x, map_size.y, map_seed_val)
+	GameState.set_world_settings(map_width, map_height, map_seed_val)
 	_set_status("Hosting...")
 	get_tree().change_scene_to_file(LOBBY_SCENE)
 

@@ -1,0 +1,60 @@
+{
+  "name": "Fog cavern visibility",
+  "map": {
+    "width": 48,
+    "height": 24,
+    "seed": 424242,
+    "surface_y": 8,
+    "carve": {
+      "rects": [
+        {
+          "position": [6, 15],
+          "size": [26, 6]
+        }
+      ],
+      "lines": [
+        {
+          "from": [13, 8],
+          "to": [13, 16],
+          "thickness": 2
+        }
+      ]
+    }
+  },
+  "troops": [
+    {
+      "type": "troop_scout",
+      "team": "left",
+      "tile": [9, 20],
+      "unit_id": 101,
+      "frozen": true
+    },
+    {
+      "type": "troop_miner",
+      "team": "left",
+      "tile": [14, 20],
+      "unit_id": 102,
+      "frozen": true
+    },
+    {
+      "type": "troop_grunt",
+      "team": "right",
+      "tile": [24, 20],
+      "unit_id": 201,
+      "frozen": true
+    },
+    {
+      "type": "troop_scout",
+      "team": "right",
+      "tile": [29, 20],
+      "unit_id": 202,
+      "frozen": true
+    }
+  ],
+  "camera": {
+    "default": {
+      "tile": [18, 16],
+      "zoom": 1.5
+    }
+  }
+}
