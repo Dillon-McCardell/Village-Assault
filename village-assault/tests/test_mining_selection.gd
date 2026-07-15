@@ -6,6 +6,7 @@ const GAME_SCENE: PackedScene = preload("res://scenes/game.tscn")
 var _next_test_port: int = NetworkManager.DEFAULT_PORT + 200
 const MiningSelectionState = preload("res://scripts/game.gd").MiningSelectionState
 const MinerJobType = preload("res://scripts/game.gd").MinerJobType
+const TacticalOrder = preload("res://scripts/game.gd").TacticalOrder
 const MinerRuntimeState = preload("res://scripts/troops/troop_miner.gd").MinerRuntimeState
 
 func _reset_runtime_state() -> void:
@@ -76,6 +77,15 @@ func _spawn_miner(game: Node, unit_id: int, color: Color) -> Node2D:
 	payload["miner_top_color"] = color
 	game.spawn_unit(Vector2(32 * unit_id, 0), GameState.Team.LEFT, "troop_miner", unit_id, payload)
 	return game.get_unit_by_id(unit_id)
+
+func _spawn_troop(game: Node, item_id: String, unit_id: int, team: int, tile_x: int = 12) -> Node2D:
+	var territory := game.get_node("TerritoryManager") as TerritoryManager
+	var stand_tile := Vector2i(tile_x, territory.get_surface_tile_y_at_x(float(tile_x * territory.tile_size)) - 1)
+	var payload: Dictionary = game.get_troop_spawn_payload(item_id)
+	game.spawn_unit(territory.troop_stand_tile_to_world_position(stand_tile, 1), team, item_id, unit_id, payload)
+	var troop: Node2D = game.get_unit_by_id(unit_id)
+	troop.position = territory.troop_stand_tile_to_world_position(stand_tile, int(troop.get("_troop_occupancy_width_tiles")))
+	return troop
 
 func _shop_button(game: Node) -> Button:
 	var shop_menu := game.get_node("CanvasLayer/UI/ShopMenu")
@@ -261,6 +271,93 @@ func test_miner_assignment_mines_tile_into_underground_air() -> void:
 
 	assert_bool(game.territory_manager.has_ground_at_tile(tile)).is_false()
 	assert_bool(game.territory_manager.is_underground_tile(tile)).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_move_command_reaches_destination_then_defends() -> void:
+	var game := _start_host_game()
+	GameState.local_team = GameState.Team.LEFT
+	var troop := _spawn_troop(game, "troop_grunt", 1, GameState.Team.LEFT, 12)
+	var territory := game.get_node("TerritoryManager") as TerritoryManager
+	var target_tile := Vector2i(14, territory.get_surface_tile_y_at_x(14.0 * territory.tile_size) - 1)
+	var target_world := territory.troop_stand_tile_to_world_position(target_tile, 1)
+
+	var accepted: bool = game.issue_troop_order_for_units([1], TacticalOrder.MOVE, target_world)
+
+	assert_bool(accepted).is_true()
+	assert_int(troop.current_order).is_equal(TacticalOrder.MOVE)
+	for _i in range(80):
+		troop._physics_process(0.1)
+		if troop.current_order == TacticalOrder.DEFEND:
+			break
+
+	assert_int(troop.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_vector(troop.defense_anchor_tile).is_equal(target_tile)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_move_command_rejects_enemy_owned_troops() -> void:
+	var game := _start_host_game()
+	GameState.local_team = GameState.Team.LEFT
+	var enemy := _spawn_troop(game, "troop_grunt", 2, GameState.Team.RIGHT, 42)
+	var target_world := enemy.position + Vector2(-32, 0)
+
+	var accepted: bool = game.issue_troop_order_for_units([2], TacticalOrder.MOVE, target_world)
+
+	assert_bool(accepted).is_false()
+	assert_int(enemy.current_order).is_equal(TacticalOrder.DEFEND)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_tactical_order_cancels_active_miner_job() -> void:
+	var game := _start_host_game()
+	GameState.local_team = GameState.Team.LEFT
+	var miner := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
+	var tile := _sample_ground_tile(game, 12)
+
+	game.select_miner_for_mining(1)
+	_press_job_button(game, "DigButton")
+	game.toggle_draft_tile(tile)
+	game.confirm_mining_selection()
+	assert_int(int(miner.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(MinerJobType.DIG)
+
+	var accepted: bool = game.issue_troop_order_for_units([1], TacticalOrder.DEFEND)
+
+	assert_bool(accepted).is_true()
+	assert_int(int(miner.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(MinerJobType.IDLE)
+	assert_int(miner.current_order).is_equal(TacticalOrder.DEFEND)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_underground_move_requires_explored_air() -> void:
+	var game := _start_host_game()
+	GameState.local_team = GameState.Team.LEFT
+	var troop := _spawn_troop(game, "troop_grunt", 1, GameState.Team.LEFT, 12)
+	var territory := game.get_node("TerritoryManager") as TerritoryManager
+	var solid_tile := _sample_ground_tile(game, 12)
+	var air_tile := solid_tile + Vector2i.UP
+	territory.destroy_tile(solid_tile)
+	assert_bool(territory.is_underground_tile(solid_tile)).is_true()
+
+	var hidden_accepted: bool = game.issue_troop_order_for_units(
+		[1],
+		TacticalOrder.MOVE,
+		territory.troop_stand_tile_to_world_position(solid_tile, 1)
+	)
+	territory.reveal_fog_tiles_for_team(GameState.Team.LEFT, [solid_tile, air_tile])
+	var explored_accepted: bool = game.issue_troop_order_for_units(
+		[1],
+		TacticalOrder.MOVE,
+		territory.troop_stand_tile_to_world_position(solid_tile, 1)
+	)
+
+	assert_bool(hidden_accepted).is_false()
+	assert_bool(explored_accepted).is_true()
+	assert_int(troop.current_order).is_equal(TacticalOrder.MOVE)
 
 	_clear_node(game)
 	_reset_runtime_state()

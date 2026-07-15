@@ -27,6 +27,8 @@ const TROOP_SCENES: Dictionary = {
 }
 
 const HEALTH_BAR_WIDTH: float = 20.0
+const TacticalOrder = preload("res://scripts/test_unit.gd").TacticalOrder
+const TroopStatus = preload("res://scripts/test_unit.gd").TroopStatus
 
 class CombatHarness extends Node2D:
 	var units_root: Node2D
@@ -180,6 +182,10 @@ func test_troop_scene_configures_multiplayer_synchronizer_properties() -> void:
 		.override_failure_message("Expected troop synchronizer to replicate current_health")
 	assert_bool(config.has_property(NodePath(":unit_id"))).is_true()\
 		.override_failure_message("Expected troop synchronizer to replicate unit_id")
+	assert_bool(config.has_property(NodePath(":current_order"))).is_true()\
+		.override_failure_message("Expected troop synchronizer to replicate tactical order")
+	assert_bool(config.has_property(NodePath(":order_revision"))).is_true()\
+		.override_failure_message("Expected troop synchronizer to replicate order revision")
 
 	_clear_node(troop)
 
@@ -293,6 +299,8 @@ func test_enemy_troops_attack_until_one_dies_and_survivor_resumes_marching() -> 
 
 	var left: Node2D = harness.add_troop("troop_brute", 1, GameState.Team.LEFT, Vector2(0, 0))
 	var right: Node2D = harness.add_troop("troop_grunt", 2, GameState.Team.RIGHT, Vector2(8, 0))
+	left.issue_tactical_order(TacticalOrder.ADVANCE)
+	right.issue_tactical_order(TacticalOrder.ADVANCE)
 
 	for _i in range(3):
 		left._physics_process(left.attack_interval)
@@ -319,6 +327,8 @@ func test_friendly_troops_do_not_attack_each_other() -> void:
 	var health_a: int = left_a.current_health
 	var health_b: int = left_b.current_health
 	var start_x: float = left_a.position.x
+	left_a.issue_tactical_order(TacticalOrder.ADVANCE)
+	left_b.issue_tactical_order(TacticalOrder.ADVANCE)
 
 	left_a._physics_process(left_a.attack_interval)
 	left_b._physics_process(left_b.attack_interval)
@@ -327,6 +337,38 @@ func test_friendly_troops_do_not_attack_each_other() -> void:
 	assert_int(left_b.current_health).is_equal(health_b)
 	assert_float(left_a.position.x).is_greater(start_x)\
 		.override_failure_message("Expected friendly troops to keep marching instead of attacking")
+
+	_clear_node(harness)
+
+func test_new_troops_default_to_defend_until_commanded() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var troop: Node2D = harness.add_troop("troop_grunt", 1, GameState.Team.LEFT, Vector2.ZERO)
+	var start_x := troop.position.x
+	troop._physics_process(0.5)
+
+	assert_int(troop.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(troop.current_status).is_equal(TroopStatus.DEFENDING)
+	assert_float(troop.position.x).is_equal_approx(start_x, 0.001)\
+		.override_failure_message("Expected new troops to hold position instead of auto-advancing")
+
+	_clear_node(harness)
+
+func test_tactical_orders_increment_revision_and_replace_previous_order() -> void:
+	var harness := CombatHarness.new()
+	_mount_node(harness)
+
+	var troop: Node2D = harness.add_troop("troop_grunt", 1, GameState.Team.LEFT, Vector2.ZERO)
+	var initial_revision: int = troop.order_revision
+
+	troop.issue_tactical_order(TacticalOrder.ADVANCE)
+	assert_int(troop.current_order).is_equal(TacticalOrder.ADVANCE)
+	assert_int(troop.order_revision).is_equal(initial_revision + 1)
+
+	troop.issue_tactical_order(TacticalOrder.DEFEND)
+	assert_int(troop.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(troop.order_revision).is_equal(initial_revision + 2)
 
 	_clear_node(harness)
 

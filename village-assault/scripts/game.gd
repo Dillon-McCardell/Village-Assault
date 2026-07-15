@@ -18,6 +18,13 @@ enum MinerJobType {
 	HARVEST,
 }
 
+enum TacticalOrder {
+	MOVE,
+	ADVANCE,
+	DEFEND,
+	RETREAT,
+}
+
 @onready var units_root: Node2D = $Units
 @onready var troop_spawner: MultiplayerSpawner = $TroopSpawner
 @onready var spawn_button: Button = $CanvasLayer/UI/SpawnButton
@@ -323,6 +330,38 @@ func get_local_miners() -> Array:
 	)
 	return miners
 
+func get_local_troops() -> Array:
+	var troops: Array = []
+	for child in _get_fog_vision_source_nodes():
+		if child == null or not is_instance_valid(child):
+			continue
+		if not child.has_method("get_unit_id") or not child.has_method("get_team"):
+			continue
+		if child.get_team() != GameState.local_team:
+			continue
+		if child.has_method("is_alive") and not child.is_alive():
+			continue
+		troops.append({
+			"unit_id": int(child.get_unit_id()),
+			"item_id": String(child.get("item_id")),
+			"node": child,
+		})
+	troops.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a["unit_id"]) < int(b["unit_id"])
+	)
+	return troops
+
+func issue_troop_order_for_units(unit_ids: Array, order: int, target_world: Variant = null) -> bool:
+	var target_tile := Vector2i(-1, -1)
+	if target_world is Vector2 and territory_manager != null:
+		target_tile = territory_manager.get_troop_standable_tile_for_world_position(target_world, 1, 1)
+		if target_tile == Vector2i(-1, -1):
+			target_tile = territory_manager.world_to_tile(target_world)
+	if not _has_active_multiplayer_peer() or _is_multiplayer_server():
+		return _apply_troop_order_request(unit_ids, order, target_tile, GameState.local_team)
+	_request_issue_troop_order.rpc_id(1, unit_ids, order, target_tile)
+	return true
+
 func get_selected_miner_unit_id() -> int:
 	return _selected_miner_unit_id
 
@@ -567,6 +606,86 @@ func _request_assign_miner_job(unit_id: int, job_payload: Dictionary) -> void:
 		return
 	DebugConsole.log_msg("MiningRPC: accept miner=%d payload=%s" % [unit_id, str(job_payload)])
 	_apply_miner_job(unit_id, job_payload)
+
+@rpc("any_peer", "reliable")
+func _request_issue_troop_order(unit_ids: Array, order: int, target_tile: Vector2i) -> void:
+	if not _is_multiplayer_server():
+		return
+	var requester_id := multiplayer.get_remote_sender_id()
+	if requester_id == 0:
+		requester_id = 1
+	var requester_team := GameState.get_team_for_peer(requester_id)
+	_apply_troop_order_request(unit_ids, order, target_tile, requester_team)
+
+func _apply_troop_order_request(unit_ids: Array, order: int, target_tile: Vector2i, requester_team: int) -> bool:
+	if requester_team == GameState.Team.NONE:
+		return false
+	var typed_unit_ids: Array[int] = []
+	for raw_id in unit_ids:
+		var unit_id := int(raw_id)
+		var troop := get_unit_by_id(unit_id)
+		if troop == null or not is_instance_valid(troop):
+			return false
+		if not troop.has_method("issue_tactical_order"):
+			return false
+		if int(troop.get("team")) != requester_team:
+			return false
+		typed_unit_ids.append(unit_id)
+	if typed_unit_ids.is_empty():
+		return false
+	if order == TacticalOrder.MOVE and not _validate_move_target_for_units(typed_unit_ids, target_tile, requester_team):
+		DebugConsole.log_msg("TroopCommand: reject move team=%d tile=%s units=%s" % [
+			requester_team,
+			str(target_tile),
+			str(typed_unit_ids),
+		])
+		return false
+	for unit_id in typed_unit_ids:
+		var troop := get_unit_by_id(unit_id)
+		troop.issue_tactical_order(order, target_tile)
+	DebugConsole.log_msg("TroopCommand: accept order=%d team=%d tile=%s units=%s" % [
+		order,
+		requester_team,
+		str(target_tile),
+		str(typed_unit_ids),
+	])
+	return true
+
+func _validate_move_target_for_units(unit_ids: Array[int], target_tile: Vector2i, requester_team: int) -> bool:
+	if territory_manager == null or target_tile == Vector2i(-1, -1):
+		return false
+	if not territory_manager.is_tile_in_bounds(target_tile):
+		return false
+	if not _is_move_target_visible_or_explored(target_tile, requester_team):
+		return false
+	for unit_id in unit_ids:
+		var troop := get_unit_by_id(unit_id)
+		if troop == null:
+			return false
+		var width_tiles := maxi(1, int(troop.get("_troop_occupancy_width_tiles")))
+		var height_tiles := maxi(1, int(troop.get("_troop_occupancy_height_tiles")))
+		var start_tile := territory_manager.get_troop_standable_tile_for_world_position(
+			troop.position,
+			width_tiles,
+			height_tiles
+		)
+		if start_tile == Vector2i(-1, -1):
+			return false
+		var fallback := territory_manager.find_nearest_reachable_troop_tile(
+			start_tile,
+			target_tile,
+			width_tiles,
+			height_tiles
+		)
+		if fallback == Vector2i(-1, -1):
+			return false
+	return true
+
+func _is_move_target_visible_or_explored(target_tile: Vector2i, requester_team: int) -> bool:
+	if not territory_manager.is_underground_tile(target_tile):
+		return true
+	return not territory_manager.has_ground_at_tile(target_tile) \
+		and territory_manager.is_fog_revealed_to_team(target_tile, requester_team)
 
 func _validate_requested_miner_job(job_payload: Dictionary, requester_team: int) -> bool:
 	var job_type := int(job_payload.get("job_type", MinerJobType.IDLE))

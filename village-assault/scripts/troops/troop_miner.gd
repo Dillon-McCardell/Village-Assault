@@ -83,6 +83,10 @@ func _configure_synchronizer() -> void:
 	synchronizer.replication_config = config
 
 func _physics_process(delta: float) -> void:
+	if int(_job_payload.get("job_type", MinerJobType.IDLE)) == MinerJobType.IDLE:
+		super._physics_process(delta)
+		_refresh_runtime_snapshot()
+		return
 	if not _has_mining_authority():
 		return
 	if not is_alive():
@@ -158,6 +162,25 @@ func get_passive_status_text() -> String:
 			return "Harvest"
 		_:
 			return "Idle"
+
+func get_role_actions() -> Array[Dictionary]:
+	return [
+		{
+			"id": "miner_dig",
+			"label": "Dig",
+			"tooltip": "Assign selected miners to dig exposed underground terrain.",
+			"targeting_mode": "dig",
+		},
+		{
+			"id": "miner_harvest",
+			"label": "Harvest",
+			"tooltip": "Assign selected miners to harvest discovered ore.",
+			"targeting_mode": "harvest",
+		},
+	]
+
+func _on_tactical_order_replaced() -> void:
+	set_miner_job(_make_idle_job())
 
 func _process_dig_job(delta: float, current_stand_tile: Vector2i) -> void:
 	_prune_completed_dig_tiles()
@@ -439,6 +462,7 @@ func _set_runtime_state(new_state: int) -> void:
 	if int(_runtime_snapshot.get("runtime_state", MinerRuntimeState.IDLE)) == new_state:
 		return
 	_runtime_snapshot["runtime_state"] = new_state
+	current_status = _status_for_runtime_state(new_state)
 	DebugConsole.log_msg("MiningJob: miner=%d runtime=%s" % [unit_id, str(new_state)])
 
 func _refresh_runtime_snapshot() -> void:
@@ -528,6 +552,21 @@ func _make_runtime_snapshot() -> Dictionary:
 		"cargo_full": false,
 		"home_base_world": Vector2.ZERO,
 	}
+
+func _status_for_runtime_state(runtime_state: int) -> int:
+	match runtime_state:
+		MinerRuntimeState.MOVING_TO_DIG_TARGET:
+			return TroopStatus.MOVING_TO_DIG_SITE
+		MinerRuntimeState.DIGGING:
+			return TroopStatus.MINING
+		MinerRuntimeState.MOVING_TO_ORE:
+			return TroopStatus.MOVING
+		MinerRuntimeState.HARVESTING:
+			return TroopStatus.HARVESTING_ORE
+		MinerRuntimeState.RETURNING_TO_BASE:
+			return TroopStatus.RETURNING_ORE_TO_BASE
+		_:
+			return TroopStatus.IDLE
 
 func _deserialize_payload(payload_text: String) -> Dictionary:
 	if payload_text.is_empty():

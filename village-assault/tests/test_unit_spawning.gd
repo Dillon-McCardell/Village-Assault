@@ -11,6 +11,7 @@ const TROOP_ITEM_SCRIPTS: Dictionary = {
 	"troop_miner": preload("res://scripts/shop/troops/troop_miner.gd"),
 }
 const DEFENSE_GATE_SCRIPT: GDScript = preload("res://scripts/shop/defense/defense_gate.gd")
+const TacticalOrder = preload("res://scripts/test_unit.gd").TacticalOrder
 var _next_test_port: int = NetworkManager.DEFAULT_PORT + 100
 
 class EmptyPayloadItem:
@@ -205,6 +206,7 @@ func test_regular_troops_halt_at_dead_end_instead_of_teleporting_to_surface() ->
 	)
 	troop.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(8, 8), 1)
 	troop._snap_to_ground()
+	troop.issue_tactical_order(TacticalOrder.ADVANCE)
 	var start_y := troop.position.y
 
 	for _i in range(20):
@@ -245,6 +247,8 @@ func test_grunt_fits_one_tile_tunnel_but_ranger_does_not_move_into_it() -> void:
 	ranger.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	grunt._snap_to_ground()
 	ranger._snap_to_ground()
+	grunt.issue_tactical_order(TacticalOrder.ADVANCE)
+	ranger.issue_tactical_order(TacticalOrder.ADVANCE)
 	var grunt_start_x := grunt.position.x
 	var ranger_start_x := ranger.position.x
 
@@ -276,6 +280,7 @@ func test_grunt_can_walk_off_one_tile_drop() -> void:
 	)
 	grunt.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	grunt._snap_to_ground()
+	grunt.issue_tactical_order(TacticalOrder.ADVANCE)
 	var start_x := grunt.position.x
 	var expected_target: Vector2 = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(7, 9), 1)
 
@@ -310,6 +315,7 @@ func test_ranger_can_walk_off_two_tile_drop() -> void:
 	)
 	ranger.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	ranger._snap_to_ground()
+	ranger.issue_tactical_order(TacticalOrder.ADVANCE)
 	var start_x := ranger.position.x
 	var expected_target: Vector2 = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(7, 10), 1)
 
@@ -341,6 +347,7 @@ func test_grunt_can_climb_one_tile_step() -> void:
 	)
 	grunt.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	grunt._snap_to_ground()
+	grunt.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 1)
 
 	grunt._physics_process(0.1)
@@ -369,6 +376,7 @@ func test_ranger_can_climb_one_tile_step() -> void:
 	)
 	ranger.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	ranger._snap_to_ground()
+	ranger.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)
 
 	ranger._physics_process(0.1)
@@ -400,6 +408,7 @@ func test_ranger_can_climb_two_tile_step() -> void:
 	)
 	ranger.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 1)
 	ranger._snap_to_ground()
+	ranger.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)
 
 	ranger._physics_process(0.1)
@@ -431,6 +440,7 @@ func test_brute_can_climb_one_tile_step() -> void:
 	)
 	brute.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 2)
 	brute._snap_to_ground()
+	brute.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)
 
 	brute._physics_process(0.1)
@@ -462,6 +472,7 @@ func test_brute_can_climb_two_tile_step() -> void:
 	)
 	brute.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 2)
 	brute._snap_to_ground()
+	brute.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)
 
 	brute._physics_process(0.1)
@@ -496,6 +507,7 @@ func test_brute_can_walk_off_two_tile_drop() -> void:
 	)
 	brute.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(5, 8), 2)
 	brute._snap_to_ground()
+	brute.issue_tactical_order(TacticalOrder.ADVANCE)
 	var start_x := brute.position.x
 	var start_y := brute.position.y
 	var expected_target: Vector2 = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 10), 2)
@@ -566,6 +578,7 @@ func test_brute_can_climb_with_only_one_support_block_at_landing() -> void:
 	)
 	brute.position = game.territory_manager.troop_stand_tile_to_world_position(Vector2i(6, 8), 2)
 	brute._snap_to_ground()
+	brute.issue_tactical_order(TacticalOrder.ADVANCE)
 	var climb_target: Vector2i = game.territory_manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)
 
 	brute._physics_process(0.1)

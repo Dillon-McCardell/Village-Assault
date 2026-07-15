@@ -750,6 +750,77 @@ func find_miner_path(start_tile: Vector2i, goal_tiles: Array[Vector2i]) -> Array
 			frontier.append(neighbor)
 	return []
 
+func find_troop_path(
+	start_tile: Vector2i,
+	goal_tiles: Array[Vector2i],
+	width_tiles: int,
+	height_tiles: int
+) -> Array[Vector2i]:
+	if not is_troop_standable_tile(start_tile, width_tiles, height_tiles):
+		return []
+	if goal_tiles.is_empty():
+		return []
+	var goal_lookup: Dictionary = {}
+	for tile in goal_tiles:
+		if is_troop_standable_tile(tile, width_tiles, height_tiles):
+			goal_lookup[tile] = true
+	if goal_lookup.is_empty():
+		return []
+	if goal_lookup.has(start_tile):
+		return [start_tile]
+	var frontier: Array[Vector2i] = [start_tile]
+	var visited: Dictionary = {start_tile: true}
+	var previous: Dictionary = {}
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		for neighbor in get_troop_walk_neighbors(current, width_tiles, height_tiles):
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			previous[neighbor] = current
+			if goal_lookup.has(neighbor):
+				return _reconstruct_path(previous, start_tile, neighbor)
+			frontier.append(neighbor)
+	return []
+
+func get_troop_walk_neighbors(tile: Vector2i, width_tiles: int, height_tiles: int) -> Array[Vector2i]:
+	var neighbors: Array[Vector2i] = []
+	for direction_x in [-1, 1]:
+		var neighbor := get_troop_walk_target(tile, direction_x, width_tiles, height_tiles)
+		if neighbor != Vector2i(-1, -1) and not neighbors.has(neighbor):
+			neighbors.append(neighbor)
+	return neighbors
+
+func find_nearest_reachable_troop_tile(
+	start_tile: Vector2i,
+	preferred_goal: Vector2i,
+	width_tiles: int,
+	height_tiles: int
+) -> Vector2i:
+	if not is_troop_standable_tile(start_tile, width_tiles, height_tiles):
+		return Vector2i(-1, -1)
+	if is_troop_standable_tile(preferred_goal, width_tiles, height_tiles):
+		var exact_path := find_troop_path(start_tile, [preferred_goal], width_tiles, height_tiles)
+		if not exact_path.is_empty():
+			return preferred_goal
+	var frontier: Array[Vector2i] = [start_tile]
+	var visited: Dictionary = {start_tile: true}
+	var best_tile := start_tile
+	var best_distance := _deterministic_tile_distance(start_tile, preferred_goal)
+	while not frontier.is_empty():
+		var current: Vector2i = frontier.pop_front()
+		var distance := _deterministic_tile_distance(current, preferred_goal)
+		if distance < best_distance or (
+				distance == best_distance and _is_tile_before(current, best_tile)):
+			best_tile = current
+			best_distance = distance
+		for neighbor in get_troop_walk_neighbors(current, width_tiles, height_tiles):
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			frontier.append(neighbor)
+	return best_tile
+
 func apply_tile_damage(tile_pos: Vector2i, amount: int) -> bool:
 	if amount <= 0:
 		return false
@@ -1552,3 +1623,11 @@ func _reconstruct_path(previous: Dictionary, start_tile: Vector2i, goal_tile: Ve
 		cursor = previous[cursor]
 		path.push_front(cursor)
 	return path
+
+func _deterministic_tile_distance(a: Vector2i, b: Vector2i) -> int:
+	return absi(a.x - b.x) + absi(a.y - b.y)
+
+func _is_tile_before(a: Vector2i, b: Vector2i) -> bool:
+	if a.y == b.y:
+		return a.x < b.x
+	return a.y < b.y

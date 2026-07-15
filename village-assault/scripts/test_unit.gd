@@ -3,6 +3,27 @@ extends Node2D
 const TROOP_INVALID_TILE := Vector2i(-1, -1)
 const TROOP_FALL_ACCELERATION: float = 900.0
 const TROOP_MAX_FALL_SPEED: float = 400.0
+const DEFEND_PURSUIT_RADIUS: float = 64.0
+
+enum TacticalOrder {
+	MOVE,
+	ADVANCE,
+	DEFEND,
+	RETREAT,
+}
+
+enum TroopStatus {
+	IDLE,
+	MOVING,
+	ADVANCING,
+	DEFENDING,
+	RETREATING,
+	ENGAGING_ENEMY,
+	MINING,
+	MOVING_TO_DIG_SITE,
+	HARVESTING_ORE,
+	RETURNING_ORE_TO_BASE,
+}
 
 @export var speed: float = 32.0
 @export var stop_range: float = 12.0
@@ -37,6 +58,11 @@ var _current_health: int = 1
 @export var damage: int = 0
 @export var defense: int = 0
 @export var tile_damage: int = 0
+@export var current_order: int = TacticalOrder.DEFEND
+@export var command_target_tile: Vector2i = TROOP_INVALID_TILE
+@export var defense_anchor_tile: Vector2i = TROOP_INVALID_TILE
+@export var order_revision: int = 0
+@export var current_status: int = TroopStatus.DEFENDING
 
 const HEALTH_BAR_WIDTH: float = 20.0
 const HEALTH_BAR_HEIGHT: float = 4.0
@@ -63,6 +89,9 @@ var _troop_occupancy_width_tiles: int = 1
 var _troop_occupancy_height_tiles: int = 1
 var _troop_fall_velocity: float = 0.0
 var _troop_movement_target_tile: Vector2i = TROOP_INVALID_TILE
+var _troop_path_tiles: Array[Vector2i] = []
+var _troop_path_index: int = 0
+var _troop_path_goal_tile: Vector2i = TROOP_INVALID_TILE
 
 func _enter_tree() -> void:
 	_configure_synchronizer()
@@ -81,6 +110,7 @@ func _ready() -> void:
 	if _territory_manager:
 		_world_rect = _territory_manager.get_world_pixel_rect()
 	_snap_to_ground()
+	_initialize_defense_anchor_if_needed()
 	_update_color()
 	_refresh_health_bar()
 
@@ -95,9 +125,10 @@ func _physics_process(delta: float) -> void:
 	_attack_cooldown = maxf(_attack_cooldown - delta, 0.0)
 	_target = _get_enemy_target()
 	if _target != null:
+		current_status = TroopStatus.ENGAGING_ENEMY
 		_attack_target()
 		return
-	_process_grounded_movement(delta)
+	_process_current_order(delta)
 	_check_despawn()
 
 func set_team(value: int) -> void:
@@ -148,9 +179,20 @@ func _get_enemy_target() -> Node2D:
 			continue
 		if node.get_team() == team:
 			continue
+		if current_order == TacticalOrder.DEFEND and not _is_within_defense_pursuit_radius(node.position):
+			continue
 		if position.distance_to(node.position) <= attack_range:
 			return node as Node2D
 	return null
+
+func _is_within_defense_pursuit_radius(world_pos: Vector2) -> bool:
+	if _territory_manager == null or defense_anchor_tile == TROOP_INVALID_TILE:
+		return true
+	var anchor_world := _territory_manager.troop_stand_tile_to_world_position(
+		defense_anchor_tile,
+		_troop_occupancy_width_tiles
+	)
+	return anchor_world.distance_to(world_pos) <= DEFEND_PURSUIT_RADIUS
 
 func _attack_target() -> void:
 	if not _has_combat_authority():
@@ -189,6 +231,39 @@ func get_team() -> int:
 func get_unit_id() -> int:
 	return unit_id
 
+func issue_tactical_order(order: int, target_tile: Vector2i = TROOP_INVALID_TILE) -> void:
+	current_order = order
+	command_target_tile = target_tile
+	order_revision += 1
+	_troop_movement_target_tile = TROOP_INVALID_TILE
+	_clear_troop_path()
+	_on_tactical_order_replaced()
+	match current_order:
+		TacticalOrder.MOVE:
+			current_status = TroopStatus.MOVING
+		TacticalOrder.ADVANCE:
+			current_status = TroopStatus.ADVANCING
+		TacticalOrder.RETREAT:
+			current_status = TroopStatus.RETREATING
+		_:
+			_set_defense_anchor_from_current_position()
+			current_status = TroopStatus.DEFENDING
+
+func get_command_state() -> Dictionary:
+	return {
+		"current_order": current_order,
+		"target_tile": command_target_tile,
+		"defense_anchor": defense_anchor_tile,
+		"order_revision": order_revision,
+		"current_status": current_status,
+	}
+
+func get_role_actions() -> Array[Dictionary]:
+	return []
+
+func _on_tactical_order_replaced() -> void:
+	pass
+
 func is_alive() -> bool:
 	return current_health > 0
 
@@ -217,6 +292,8 @@ func _snap_to_ground() -> void:
 	position = _territory_manager.troop_stand_tile_to_world_position(stand_tile, _troop_occupancy_width_tiles)
 	_troop_fall_velocity = 0.0
 	_troop_movement_target_tile = TROOP_INVALID_TILE
+	if defense_anchor_tile == TROOP_INVALID_TILE:
+		defense_anchor_tile = stand_tile
 
 func set_body_polygon(points: PackedVector2Array) -> void:
 	var current_body := _get_body()
@@ -319,7 +396,22 @@ func _has_simulation_authority() -> bool:
 		return true
 	return is_multiplayer_authority()
 
-func _process_grounded_movement(delta: float) -> void:
+func _process_current_order(delta: float) -> void:
+	match current_order:
+		TacticalOrder.MOVE:
+			current_status = TroopStatus.MOVING
+			_process_move_order(delta)
+		TacticalOrder.ADVANCE:
+			current_status = TroopStatus.ADVANCING
+			_process_advance_order(delta)
+		TacticalOrder.RETREAT:
+			current_status = TroopStatus.RETREATING
+			_process_retreat_order(delta)
+		_:
+			current_status = TroopStatus.DEFENDING
+			_process_defend_order(delta)
+
+func _process_advance_order(delta: float) -> void:
 	var direction_x := 0
 	if team == GameState.Team.LEFT:
 		direction_x = 1
@@ -360,6 +452,117 @@ func _process_grounded_movement(delta: float) -> void:
 		_troop_movement_target_tile = TROOP_INVALID_TILE
 		return
 	_follow_troop_ground_target(forward_tile, delta)
+
+func _process_move_order(delta: float) -> void:
+	if _territory_manager == null or command_target_tile == TROOP_INVALID_TILE:
+		issue_tactical_order(TacticalOrder.DEFEND)
+		return
+	var current_tile := _get_current_troop_stand_tile()
+	if current_tile == TROOP_INVALID_TILE:
+		return
+	var fallback_tile := _territory_manager.find_nearest_reachable_troop_tile(
+		current_tile,
+		command_target_tile,
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if fallback_tile == TROOP_INVALID_TILE:
+		issue_tactical_order(TacticalOrder.DEFEND)
+		return
+	if _troop_path_tiles.is_empty() or _troop_path_goal_tile != fallback_tile:
+		_troop_path_tiles = _territory_manager.find_troop_path(
+			current_tile,
+			[fallback_tile],
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		)
+		_troop_path_index = 0
+		_troop_path_goal_tile = fallback_tile
+	if _follow_troop_path(delta):
+		return
+	defense_anchor_tile = fallback_tile
+	issue_tactical_order(TacticalOrder.DEFEND, fallback_tile)
+
+func _process_retreat_order(delta: float) -> void:
+	if _territory_manager == null:
+		issue_tactical_order(TacticalOrder.DEFEND)
+		return
+	var base_tile := _territory_manager.get_troop_standable_tile_for_world_position(
+		_territory_manager.get_base_anchor_world(team),
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if base_tile == TROOP_INVALID_TILE:
+		issue_tactical_order(TacticalOrder.DEFEND)
+		return
+	command_target_tile = base_tile
+	_process_move_order(delta)
+	current_status = TroopStatus.RETREATING if current_order == TacticalOrder.MOVE else current_status
+
+func _process_defend_order(delta: float) -> void:
+	if _territory_manager == null:
+		return
+	if defense_anchor_tile == TROOP_INVALID_TILE:
+		_set_defense_anchor_from_current_position()
+	var current_tile := _get_current_troop_stand_tile()
+	if current_tile == TROOP_INVALID_TILE:
+		return
+	var anchor_world := _territory_manager.troop_stand_tile_to_world_position(defense_anchor_tile, _troop_occupancy_width_tiles)
+	if position.distance_to(anchor_world) <= 0.01:
+		return
+	if position.distance_to(anchor_world) <= DEFEND_PURSUIT_RADIUS:
+		command_target_tile = defense_anchor_tile
+		_process_move_order(delta)
+		current_order = TacticalOrder.DEFEND
+		current_status = TroopStatus.DEFENDING
+
+func _follow_troop_path(delta: float) -> bool:
+	if _territory_manager == null or _troop_path_tiles.is_empty():
+		return false
+	while _troop_path_index < _troop_path_tiles.size():
+		var target_tile: Vector2i = _troop_path_tiles[_troop_path_index]
+		var current_tile := _get_current_troop_stand_tile()
+		if current_tile == target_tile:
+			_troop_path_index += 1
+			continue
+		_follow_troop_ground_target(target_tile, delta)
+		return true
+	return false
+
+func _get_current_troop_stand_tile() -> Vector2i:
+	if _territory_manager == null:
+		return TROOP_INVALID_TILE
+	var current_tile := _get_troop_exact_stand_tile_from_position()
+	if _apply_troop_fall_if_unsupported(0.0, current_tile):
+		return TROOP_INVALID_TILE
+	if current_tile == TROOP_INVALID_TILE:
+		current_tile = _territory_manager.get_troop_standable_tile_for_world_position(
+			position,
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		)
+	return current_tile
+
+func _clear_troop_path() -> void:
+	_troop_path_tiles.clear()
+	_troop_path_index = 0
+	_troop_path_goal_tile = TROOP_INVALID_TILE
+
+func _initialize_defense_anchor_if_needed() -> void:
+	if defense_anchor_tile != TROOP_INVALID_TILE:
+		return
+	_set_defense_anchor_from_current_position()
+
+func _set_defense_anchor_from_current_position() -> void:
+	if _territory_manager == null:
+		return
+	var current_tile := _territory_manager.get_troop_standable_tile_for_world_position(
+		position,
+		_troop_occupancy_width_tiles,
+		_troop_occupancy_height_tiles
+	)
+	if current_tile != TROOP_INVALID_TILE:
+		defense_anchor_tile = current_tile
 
 func _follow_troop_ground_target(target_tile: Vector2i, delta: float) -> void:
 	if _territory_manager == null:
@@ -436,6 +639,11 @@ func _configure_synchronizer() -> void:
 	_add_replicated_property(config, NodePath(":damage"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	_add_replicated_property(config, NodePath(":defense"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	_add_replicated_property(config, NodePath(":tile_damage"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":current_order"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":command_target_tile"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":defense_anchor_tile"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":order_revision"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	_add_replicated_property(config, NodePath(":current_status"), true, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	synchronizer.replication_config = config
 
 func _add_replicated_property(
