@@ -37,8 +37,12 @@ func _start_host_game() -> Node:
 func _mining_menu(game: Node) -> Control:
 	return game.get_node("CanvasLayer/UI/MiningMenu") as Control
 
-func _mine_button(game: Node) -> Button:
-	return game.get_node("CanvasLayer/UI/MiningMenu/MineButton") as Button
+func _role_button(game: Node) -> Button:
+	return game.troop_command_ui.get_role_button() as Button
+
+func _open_selected_miner_picker(game: Node, unit_id: int = 1) -> void:
+	game.select_troops_by_ids([unit_id])
+	_role_button(game).emit_signal("pressed")
 
 func _picker_panel(game: Node) -> Panel:
 	return (_mining_menu(game) as Control).get_picker_panel() as Panel
@@ -94,27 +98,29 @@ func _shop_button(game: Node) -> Button:
 func _press_job_button(game: Node, button_name: String) -> void:
 	(_job_panel(game).find_child(button_name, true, false) as Button).emit_signal("pressed")
 
-func test_mine_button_opens_centered_miner_picker() -> void:
+func test_role_actions_button_opens_centered_miner_picker() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
 	assert_bool(_picker_panel(game).visible).is_true()
 	assert_int(_picker_grid(game).get_child_count()).is_equal(1)
+	assert_bool((_mining_menu(game).get_origin_button() as Button).visible).is_false()
 
 	_clear_node(game)
 	_reset_runtime_state()
 
-func test_pressing_mine_again_closes_empty_miner_picker() -> void:
+func test_pressing_role_actions_again_closes_miner_picker() -> void:
 	var game := _start_host_game()
+	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
 	assert_bool(_picker_panel(game).visible).is_true()
 
-	_mine_button(game).emit_signal("pressed")
+	_role_button(game).emit_signal("pressed")
 
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.INACTIVE)
 	assert_bool(_picker_panel(game).visible).is_false()
@@ -126,7 +132,7 @@ func test_pressing_other_button_closes_miner_picker() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 	assert_bool(_picker_panel(game).visible).is_true()
 
 	var shop_button := _shop_button(game)
@@ -156,7 +162,7 @@ func test_clicking_picker_slot_selects_miner() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 	var slot := _picker_grid(game).get_child(0) as Button
 	slot.emit_signal("pressed")
 
@@ -193,7 +199,7 @@ func test_picker_uses_live_miner_color_from_unit() -> void:
 	var miner := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 	miner.miner_top_color = Color(0.95, 0.45, 0.75, 1.0)
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 
 	var slot := _picker_grid(game).get_child(0) as Button
 	var wrapper := slot.get_child(0) as Control
@@ -605,7 +611,7 @@ func test_harvest_confirm_commits_ordered_ore_queue() -> void:
 	_clear_node(game)
 	_reset_runtime_state()
 
-func test_mine_button_is_clickable_again_after_confirm() -> void:
+func test_role_actions_button_is_available_again_after_confirm() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 	var tile := _sample_ground_tile(game, 12)
@@ -615,7 +621,7 @@ func test_mine_button_is_clickable_again_after_confirm() -> void:
 	game.toggle_draft_tile(tile)
 	game.confirm_mining_selection()
 
-	_mine_button(game).emit_signal("pressed")
+	_open_selected_miner_picker(game)
 
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
 	assert_bool(_picker_panel(game).visible).is_true()

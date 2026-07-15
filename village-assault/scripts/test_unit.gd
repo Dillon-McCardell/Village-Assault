@@ -92,6 +92,7 @@ var _troop_movement_target_tile: Vector2i = TROOP_INVALID_TILE
 var _troop_path_tiles: Array[Vector2i] = []
 var _troop_path_index: int = 0
 var _troop_path_goal_tile: Vector2i = TROOP_INVALID_TILE
+var _selection_outline: Line2D = null
 
 func _enter_tree() -> void:
 	_configure_synchronizer()
@@ -111,6 +112,7 @@ func _ready() -> void:
 		_world_rect = _territory_manager.get_world_pixel_rect()
 	_snap_to_ground()
 	_initialize_defense_anchor_if_needed()
+	_ensure_selection_outline()
 	_update_color()
 	_refresh_health_bar()
 
@@ -261,8 +263,60 @@ func get_command_state() -> Dictionary:
 func get_role_actions() -> Array[Dictionary]:
 	return []
 
+func get_selection_world_rect() -> Rect2:
+	var current_body := _get_body()
+	if current_body == null or current_body.polygon.is_empty():
+		return Rect2(global_position - Vector2(8.0, unit_height * 0.5), Vector2(16.0, unit_height))
+	var min_point := current_body.polygon[0]
+	var max_point := current_body.polygon[0]
+	for point in current_body.polygon:
+		min_point.x = minf(min_point.x, point.x)
+		min_point.y = minf(min_point.y, point.y)
+		max_point.x = maxf(max_point.x, point.x)
+		max_point.y = maxf(max_point.y, point.y)
+	return Rect2(global_position + min_point, max_point - min_point).grow(4.0)
+
+func set_selection_visual(selected: bool, active: bool = true) -> void:
+	_ensure_selection_outline()
+	if _selection_outline == null:
+		return
+	_selection_outline.visible = selected
+	_selection_outline.default_color = (
+		Color(0.35, 0.9, 1.0, 1.0) if active else Color(0.65, 0.68, 0.72, 0.55)
+	)
+
 func _on_tactical_order_replaced() -> void:
 	pass
+
+func _ensure_selection_outline() -> void:
+	if _selection_outline != null and is_instance_valid(_selection_outline):
+		return
+	var current_body := _get_body()
+	if current_body == null or current_body.polygon.is_empty():
+		return
+	var min_point := current_body.polygon[0]
+	var max_point := current_body.polygon[0]
+	for point in current_body.polygon:
+		min_point.x = minf(min_point.x, point.x)
+		min_point.y = minf(min_point.y, point.y)
+		max_point.x = maxf(max_point.x, point.x)
+		max_point.y = maxf(max_point.y, point.y)
+	min_point -= Vector2(3.0, 3.0)
+	max_point += Vector2(3.0, 3.0)
+	_selection_outline = Line2D.new()
+	_selection_outline.name = "SelectionOutline"
+	_selection_outline.width = 2.0
+	_selection_outline.antialiased = true
+	_selection_outline.z_index = 20
+	_selection_outline.points = PackedVector2Array([
+		min_point,
+		Vector2(max_point.x, min_point.y),
+		max_point,
+		Vector2(min_point.x, max_point.y),
+		min_point,
+	])
+	_selection_outline.visible = false
+	add_child(_selection_outline)
 
 func is_alive() -> bool:
 	return current_health > 0

@@ -1,6 +1,5 @@
 extends Control
 
-signal mine_mode_requested
 signal confirm_pressed
 signal cancel_pressed
 signal miner_selected(unit_id: int)
@@ -11,7 +10,6 @@ signal harvest_job_requested
 @export var spacing: Vector2 = Vector2(8, 8)
 @export var margin: Vector2 = Vector2(16, 16)
 
-const PICKAXE_GLYPH: String = "⛏ Mine"
 const CONFIRM_GLYPH: String = "✓ Confirm"
 const CANCEL_GLYPH: String = "✕"
 const DEFAULT_FONT_COLOR: Color = Color(1, 1, 1, 1)
@@ -43,8 +41,9 @@ func _notification(what: int) -> void:
 func show_pickaxe_state() -> void:
 	_draft_active = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_origin_button.text = PICKAXE_GLYPH
+	_origin_button.text = CONFIRM_GLYPH
 	_origin_button.add_theme_color_override("font_color", DEFAULT_FONT_COLOR)
+	_origin_button.visible = false
 	_cancel_button.visible = false
 	hide_miner_picker()
 	hide_job_prompt()
@@ -54,12 +53,14 @@ func show_confirm_state() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	_origin_button.text = CONFIRM_GLYPH
 	_origin_button.add_theme_color_override("font_color", CONFIRM_FONT_COLOR)
+	_origin_button.visible = true
 	_cancel_button.visible = true
 	hide_miner_picker()
 	hide_job_prompt()
 
 func show_miner_picker(miners: Array) -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	_origin_button.visible = false
 	_rebuild_picker_slots(miners)
 	hide_job_prompt()
 	_picker_panel.visible = true
@@ -70,6 +71,7 @@ func hide_miner_picker() -> void:
 
 func show_job_prompt(auto_harvest_enabled: bool = false) -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	_origin_button.visible = false
 	hide_miner_picker()
 	_job_auto_checkbox.button_pressed = auto_harvest_enabled
 	_job_panel.visible = true
@@ -100,10 +102,10 @@ func get_job_auto_checkbox() -> CheckBox:
 	return _job_auto_checkbox
 
 func _build_buttons() -> void:
-	_origin_button = _make_button(PICKAXE_GLYPH, _on_origin_pressed)
-	_origin_button.name = "MineButton"
+	_origin_button = _make_button(CONFIRM_GLYPH, _on_origin_pressed)
+	_origin_button.name = "ConfirmButton"
 	add_child(_origin_button)
-	_origin_button.visible = true
+	_origin_button.visible = false
 
 	_cancel_button = _make_button(CANCEL_GLYPH, _on_cancel_button_pressed)
 	_cancel_button.name = "CancelButton"
@@ -215,8 +217,6 @@ func _layout_buttons() -> void:
 func _on_origin_pressed() -> void:
 	if _draft_active:
 		confirm_pressed.emit()
-		return
-	mine_mode_requested.emit()
 
 func _on_cancel_button_pressed() -> void:
 	cancel_pressed.emit()

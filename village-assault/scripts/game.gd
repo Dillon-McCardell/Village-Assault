@@ -33,6 +33,7 @@ enum TacticalOrder {
 @onready var camera: Camera2D = $Camera2D
 @onready var debug_overlay: TextEdit = $DebugLayer/DebugOverlay
 @onready var mining_menu: Control = $CanvasLayer/UI/MiningMenu
+@onready var troop_command_ui: TroopCommandUI = $CanvasLayer/UI/TroopCommandUI
 const MINER_SCRIPT: GDScript = preload("res://scripts/troops/troop_miner.gd")
 
 var _test_unit_scene: PackedScene = preload("res://scenes/test_unit.tscn")
@@ -76,11 +77,21 @@ var _selection_drag_active: bool = false
 var _stroke_select_mode: Variant = null
 var _fog_reveal_scan_remaining: float = 0.0
 var _fog_vision_refresh_remaining: float = 0.0
+var _selection_cohort_ids: Array[int] = []
+var _active_selection_ids: Dictionary = {}
+var _troop_selection_drag_active: bool = false
+var _troop_selection_drag_start: Vector2 = Vector2.ZERO
+var _troop_selection_drag_current: Vector2 = Vector2.ZERO
+var _troop_command_right_pressed: bool = false
+var _troop_command_right_start: Vector2 = Vector2.ZERO
+var _troop_command_right_dragged: bool = false
+var _selected_tactical_order: int = TacticalOrder.MOVE
 
 const MAX_MINERS_PER_PLAYER: int = 6
 const FOG_REVEAL_SCAN_INTERVAL_SEC: float = 0.15
 const FOG_VISION_REFRESH_INTERVAL_SEC: float = 0.05
 const TROOP_VISIBILITY_FADE_DURATION_SEC: float = 0.2
+const TROOP_SELECTION_DRAG_THRESHOLD: float = 6.0
 const MINER_COLOR_PALETTE: Array[Color] = [
 	Color(0.20, 0.70, 0.90, 1.0),
 	Color(0.95, 0.45, 0.75, 1.0),
@@ -110,6 +121,7 @@ func _get_local_peer_id_or_default(default_value: int = 0) -> int:
 func _physics_process(delta: float) -> void:
 	_process_spawn_queue()
 	_prune_dead_miner_state()
+	_prune_troop_selection()
 	_process_troop_fog_reveal(delta)
 	_refresh_local_fog_vision(delta)
 	_refresh_troop_fog_visibility(delta)
@@ -142,8 +154,6 @@ func _ready() -> void:
 	_disconnect_overlay.return_to_menu_pressed.connect(_on_disconnect_return_to_menu)
 
 	spawn_button.pressed.connect(_on_spawn_pressed)
-	if mining_menu.has_signal("mine_mode_requested"):
-		mining_menu.mine_mode_requested.connect(_on_mine_mode_requested)
 	if mining_menu.has_signal("confirm_pressed"):
 		mining_menu.confirm_pressed.connect(confirm_mining_selection)
 	if mining_menu.has_signal("cancel_pressed"):
@@ -154,6 +164,11 @@ func _ready() -> void:
 		mining_menu.dig_job_requested.connect(_on_dig_job_requested)
 	if mining_menu.has_signal("harvest_job_requested"):
 		mining_menu.harvest_job_requested.connect(_on_harvest_job_requested)
+	if troop_command_ui != null:
+		troop_command_ui.order_requested.connect(_on_tactical_order_requested)
+		troop_command_ui.restore_all_requested.connect(restore_full_troop_selection)
+		troop_command_ui.type_filter_requested.connect(filter_troop_selection_to_type)
+		troop_command_ui.role_actions_requested.connect(_on_role_actions_requested)
 	_connect_picker_cancel_buttons()
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -171,6 +186,9 @@ func _ready() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton or event is InputEventMouseMotion:
 		_handle_mining_selection_input(event)
+		if _is_mining_interaction_active():
+			return
+		_handle_troop_selection_input(event)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
@@ -344,12 +362,121 @@ func get_local_troops() -> Array:
 		troops.append({
 			"unit_id": int(child.get_unit_id()),
 			"item_id": String(child.get("item_id")),
+			"role_actions": child.get_role_actions() if child.has_method("get_role_actions") else [],
 			"node": child,
 		})
 	troops.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return int(a["unit_id"]) < int(b["unit_id"])
 	)
 	return troops
+
+func get_troop_selection_cohort_ids() -> Array[int]:
+	return _selection_cohort_ids.duplicate()
+
+func get_active_troop_selection_ids() -> Array[int]:
+	var result: Array[int] = []
+	for unit_id in _selection_cohort_ids:
+		if _active_selection_ids.has(unit_id):
+			result.append(unit_id)
+	return result
+
+func select_troops_by_ids(unit_ids: Array, additive: bool = false) -> void:
+	var local_lookup: Dictionary = {}
+	for entry in get_local_troops():
+		local_lookup[int(entry.get("unit_id", -1))] = true
+	if not additive:
+		_selection_cohort_ids.clear()
+	for raw_unit_id in unit_ids:
+		var unit_id := int(raw_unit_id)
+		if not local_lookup.has(unit_id):
+			continue
+		if additive and _selection_cohort_ids.has(unit_id):
+			_selection_cohort_ids.erase(unit_id)
+		else:
+			_selection_cohort_ids.append(unit_id)
+	_selection_cohort_ids.sort()
+	_active_selection_ids.clear()
+	for unit_id in _selection_cohort_ids:
+		_active_selection_ids[unit_id] = true
+	_selected_tactical_order = TacticalOrder.MOVE
+	_refresh_troop_selection_state()
+
+func clear_troop_selection() -> void:
+	_selection_cohort_ids.clear()
+	_active_selection_ids.clear()
+	_selected_tactical_order = TacticalOrder.MOVE
+	_refresh_troop_selection_state()
+
+func restore_full_troop_selection() -> void:
+	_active_selection_ids.clear()
+	for unit_id in _selection_cohort_ids:
+		_active_selection_ids[unit_id] = true
+	_refresh_troop_selection_state()
+
+func filter_troop_selection_to_type(item_id: String, additive: bool = false) -> void:
+	var matching_ids: Array[int] = []
+	for unit_id in _selection_cohort_ids:
+		var troop := get_unit_by_id(unit_id)
+		if troop != null and String(troop.get("item_id")) == item_id:
+			matching_ids.append(unit_id)
+	if not additive:
+		_active_selection_ids.clear()
+		for unit_id in matching_ids:
+			_active_selection_ids[unit_id] = true
+	else:
+		var remove_type := not matching_ids.is_empty()
+		for unit_id in matching_ids:
+			if not _active_selection_ids.has(unit_id):
+				remove_type = false
+				break
+		for unit_id in matching_ids:
+			if remove_type:
+				_active_selection_ids.erase(unit_id)
+			else:
+				_active_selection_ids[unit_id] = true
+	_refresh_troop_selection_state()
+
+func _refresh_troop_selection_state() -> void:
+	var cohort_lookup: Dictionary = {}
+	for unit_id in _selection_cohort_ids:
+		cohort_lookup[unit_id] = true
+	for entry in get_local_troops():
+		var unit_id := int(entry.get("unit_id", -1))
+		var troop: Variant = entry.get("node")
+		if troop != null and troop.has_method("set_selection_visual"):
+			troop.set_selection_visual(cohort_lookup.has(unit_id), _active_selection_ids.has(unit_id))
+	if troop_command_ui != null:
+		troop_command_ui.update_selection(
+			_get_selection_cohort_entries(),
+			_active_selection_ids,
+			_selected_tactical_order
+		)
+
+func _get_selection_cohort_entries() -> Array[Dictionary]:
+	var local_entries: Dictionary = {}
+	for entry in get_local_troops():
+		local_entries[int(entry.get("unit_id", -1))] = entry
+	var result: Array[Dictionary] = []
+	for unit_id in _selection_cohort_ids:
+		if local_entries.has(unit_id):
+			result.append(local_entries[unit_id])
+	return result
+
+func _prune_troop_selection() -> void:
+	if _selection_cohort_ids.is_empty():
+		return
+	var local_lookup: Dictionary = {}
+	for entry in get_local_troops():
+		local_lookup[int(entry.get("unit_id", -1))] = true
+	var changed := false
+	for unit_id in _selection_cohort_ids.duplicate():
+		if local_lookup.has(unit_id):
+			continue
+		_selection_cohort_ids.erase(unit_id)
+		_active_selection_ids.erase(unit_id)
+		changed = true
+	if changed:
+		_refresh_troop_selection_state()
 
 func issue_troop_order_for_units(unit_ids: Array, order: int, target_world: Variant = null) -> bool:
 	var target_tile := Vector2i(-1, -1)
@@ -1046,7 +1173,7 @@ func get_test_snapshot() -> Dictionary:
 		"revealed_fog_snapshot": territory_manager.get_revealed_fog_snapshot() if territory_manager != null else {},
 	}
 
-func open_miner_picker() -> void:
+func open_miner_picker(eligible_miners: Variant = null) -> void:
 	_prune_dead_miner_state()
 	_selected_miner_unit_id = -1
 	_draft_mining_tiles.clear()
@@ -1063,23 +1190,15 @@ func open_miner_picker() -> void:
 	if mining_menu.has_method("show_pickaxe_state"):
 		mining_menu.show_pickaxe_state()
 	if mining_menu.has_method("show_miner_picker"):
-		mining_menu.show_miner_picker(get_local_miners())
+		var miners: Array = eligible_miners if eligible_miners is Array else get_local_miners()
+		mining_menu.show_miner_picker(miners)
 	_refresh_mining_selection_visuals()
 
 func enter_mining_mode() -> void:
 	open_miner_picker()
 
-func _on_mine_mode_requested() -> void:
-	if _mining_selection_state == MiningSelectionState.PICKING_MINER \
-		or _mining_selection_state == MiningSelectionState.JOB_PROMPT \
-		or _mining_selection_state == MiningSelectionState.SELECTING_DIG \
-		or _mining_selection_state == MiningSelectionState.SELECTING_HARVEST:
-		cancel_mining_selection()
-		return
-	open_miner_picker()
-
 func _connect_picker_cancel_buttons() -> void:
-	var mine_button := mining_menu.get_origin_button() as Button if mining_menu.has_method("get_origin_button") else null
+	var confirm_button := mining_menu.get_origin_button() as Button if mining_menu.has_method("get_origin_button") else null
 	var cancel_button := mining_menu.get_cancel_button() as Button if mining_menu.has_method("get_cancel_button") else null
 	for node in $CanvasLayer/UI.find_children("", "Button", true, false):
 		var button := node as Button
@@ -1087,7 +1206,9 @@ func _connect_picker_cancel_buttons() -> void:
 			continue
 		if mining_menu.is_ancestor_of(button):
 			continue
-		if button == mine_button or button == cancel_button:
+		if troop_command_ui != null and troop_command_ui.is_ancestor_of(button):
+			continue
+		if button == confirm_button or button == cancel_button:
 			continue
 		if button.pressed.is_connected(_on_non_mining_button_pressed):
 			continue
@@ -1262,6 +1383,147 @@ func get_mining_selection_state() -> int:
 
 func world_to_screen_position(world_pos: Vector2) -> Vector2:
 	return get_viewport().get_canvas_transform() * world_pos
+
+func _is_mining_interaction_active() -> bool:
+	return _mining_selection_state in [
+		MiningSelectionState.PICKING_MINER,
+		MiningSelectionState.JOB_PROMPT,
+		MiningSelectionState.SELECTING_DIG,
+		MiningSelectionState.SELECTING_HARVEST,
+	]
+
+func _handle_troop_selection_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			if _is_pointer_over_blocking_ui():
+				return
+			_troop_selection_drag_active = true
+			_troop_selection_drag_start = event.position
+			_troop_selection_drag_current = event.position
+		else:
+			if not _troop_selection_drag_active:
+				return
+			_troop_selection_drag_active = false
+			_troop_selection_drag_current = event.position
+			if troop_command_ui != null:
+				troop_command_ui.hide_selection_rect()
+			_finalize_troop_world_selection(event.shift_pressed)
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+		if event.pressed:
+			if _is_pointer_over_blocking_ui() or _selection_cohort_ids.is_empty():
+				return
+			_troop_command_right_pressed = true
+			_troop_command_right_start = event.position
+			_troop_command_right_dragged = false
+		else:
+			if not _troop_command_right_pressed:
+				return
+			_troop_command_right_pressed = false
+			if _troop_command_right_dragged or _is_pointer_over_blocking_ui():
+				return
+			if _selected_tactical_order == TacticalOrder.MOVE:
+				_issue_active_move_to_screen_position(event.position)
+		return
+	if not event is InputEventMouseMotion:
+		return
+	if _troop_selection_drag_active:
+		_troop_selection_drag_current = event.position
+		var rect := _normalized_screen_rect(_troop_selection_drag_start, _troop_selection_drag_current)
+		if rect.size.length() >= TROOP_SELECTION_DRAG_THRESHOLD and troop_command_ui != null:
+			troop_command_ui.show_selection_rect(rect)
+	if _troop_command_right_pressed \
+		and event.position.distance_to(_troop_command_right_start) >= TROOP_SELECTION_DRAG_THRESHOLD:
+		_troop_command_right_dragged = true
+
+func _finalize_troop_world_selection(additive: bool) -> void:
+	var selection_rect := _normalized_screen_rect(
+		_troop_selection_drag_start,
+		_troop_selection_drag_current
+	)
+	var is_drag := selection_rect.size.length() >= TROOP_SELECTION_DRAG_THRESHOLD
+	var captured_ids := _get_troops_in_screen_rect(selection_rect, not is_drag)
+	if captured_ids.is_empty() and not additive:
+		clear_troop_selection()
+		return
+	select_troops_by_ids(captured_ids, additive)
+
+func _get_troops_in_screen_rect(selection_rect: Rect2, single_pick: bool) -> Array[int]:
+	var matches: Array[Dictionary] = []
+	var pick_point := selection_rect.position + selection_rect.size * 0.5
+	for entry in get_local_troops():
+		var troop: Node2D = entry.get("node") as Node2D
+		if troop == null or not troop.visible or not troop.has_method("get_selection_world_rect"):
+			continue
+		var world_rect: Rect2 = troop.get_selection_world_rect()
+		var screen_start := world_to_screen_position(world_rect.position)
+		var screen_end := world_to_screen_position(world_rect.end)
+		var troop_screen_rect := _normalized_screen_rect(screen_start, screen_end)
+		if single_pick:
+			if not troop_screen_rect.has_point(pick_point):
+				continue
+		else:
+			if not selection_rect.intersects(troop_screen_rect, true):
+				continue
+		matches.append({
+			"unit_id": int(entry.get("unit_id", -1)),
+			"distance": pick_point.distance_squared_to(world_to_screen_position(troop.global_position)),
+		})
+	if single_pick and matches.size() > 1:
+		matches.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			if not is_equal_approx(float(a["distance"]), float(b["distance"])):
+				return float(a["distance"]) < float(b["distance"])
+			return int(a["unit_id"]) < int(b["unit_id"])
+		)
+		matches.resize(1)
+	var result: Array[int] = []
+	for match_entry in matches:
+		result.append(int(match_entry["unit_id"]))
+	return result
+
+func _normalized_screen_rect(start: Vector2, finish: Vector2) -> Rect2:
+	var min_point := Vector2(minf(start.x, finish.x), minf(start.y, finish.y))
+	var max_point := Vector2(maxf(start.x, finish.x), maxf(start.y, finish.y))
+	var size := max_point - min_point
+	if size.x < 1.0:
+		min_point.x -= 1.0
+		size.x = 2.0
+	if size.y < 1.0:
+		min_point.y -= 1.0
+		size.y = 2.0
+	return Rect2(min_point, size)
+
+func _on_tactical_order_requested(order: int) -> void:
+	if get_active_troop_selection_ids().is_empty():
+		return
+	if _is_mining_interaction_active():
+		cancel_mining_selection()
+	_selected_tactical_order = order
+	if order != TacticalOrder.MOVE:
+		issue_troop_order_for_units(get_active_troop_selection_ids(), order)
+	_refresh_troop_selection_state()
+
+func _issue_active_move_to_screen_position(screen_position: Vector2) -> bool:
+	var active_ids := get_active_troop_selection_ids()
+	if active_ids.is_empty():
+		return false
+	var target_world := _screen_to_world_position(screen_position)
+	var accepted := issue_troop_order_for_units(active_ids, TacticalOrder.MOVE, target_world)
+	if not accepted:
+		DebugConsole.log_msg("TroopCommand: rejected Move target=%s" % str(target_world))
+	return accepted
+
+func _on_role_actions_requested() -> void:
+	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
+		cancel_mining_selection()
+		return
+	var active_miners: Array = []
+	for miner in get_local_miners():
+		if _active_selection_ids.has(int(miner.get("unit_id", -1))):
+			active_miners.append(miner)
+	if active_miners.is_empty():
+		return
+	open_miner_picker(active_miners)
 
 func _handle_mining_selection_input(event: InputEvent) -> void:
 	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
