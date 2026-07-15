@@ -1,0 +1,64 @@
+{
+  "name": "Client grouped mining lifecycle",
+  "map": {
+    "width": 48,
+    "height": 24,
+    "seed": 320032,
+    "surface_y": 8,
+    "carve": {
+      "rects": [
+        {
+          "position": [26, 14],
+          "size": [14, 6]
+        }
+      ]
+    }
+  },
+  "troops": [
+    {
+      "type": "troop_scout",
+      "team": "left",
+      "tile": [8, 7],
+      "unit_id": 101,
+      "frozen": true
+    },
+    {
+      "type": "troop_miner",
+      "team": "right",
+      "tile": [32, 19],
+      "unit_id": 201,
+      "frozen": true,
+      "spawn_payload": {
+        "attack_interval": 0.2,
+        "speed": 64.0,
+        "tile_damage": 1
+      }
+    },
+    {
+      "type": "troop_miner",
+      "team": "right",
+      "tile": [35, 19],
+      "unit_id": 202,
+      "frozen": true,
+      "spawn_payload": {
+        "attack_interval": 0.2,
+        "speed": 64.0,
+        "tile_damage": 1
+      }
+    }
+  ],
+  "camera": {
+    "default": {
+      "tile": [36, 17],
+      "zoom": 1.6
+    }
+  },
+  "automation": {
+    "type": "grouped_mining",
+    "command_role": "client",
+    "job": "dig",
+    "unit_ids": [201, 202],
+    "tiles": [[40, 19], [41, 19], [42, 19]],
+    "timeout_sec": 15.0
+  }
+}

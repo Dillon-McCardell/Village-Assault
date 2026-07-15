@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit after every process reports that the scenario is ready.",
     )
+    parser.add_argument(
+        "--run-automation",
+        action="store_true",
+        help="Wait for and verify the scenario's automated multiplayer acceptance flow.",
+    )
     return parser.parse_args()
 
 
@@ -182,11 +187,30 @@ def terminate_processes(processes: list[subprocess.Popen[Any]]) -> None:
             process.kill()
 
 
+def verify_automation_states(events: dict[str, dict[str, Any]]) -> None:
+    states = {role: event.get("state", {}) for role, event in events.items()}
+    if not all(state.get("target_tiles_destroyed") is True for state in states.values()):
+        raise SessionError(f"Automation did not destroy every target tile: {states}")
+    reference_role = next(iter(states))
+    reference_state = states[reference_role]
+    for role, state in states.items():
+        if state != reference_state:
+            raise SessionError(
+                "Automation state mismatch between "
+                f"{reference_role} and {role}: "
+                f"{json.dumps(states, sort_keys=True)}"
+            )
+
+
 def main() -> int:
     args = parse_args()
     processes: list[subprocess.Popen[Any]] = []
     try:
         scenario_path, scenario = load_scenario(args.scenario)
+        if args.exit_after_ready and args.run_automation:
+            raise SessionError("--exit-after-ready and --run-automation cannot be combined.")
+        if args.run_automation and not isinstance(scenario.get("automation"), dict):
+            raise SessionError("--run-automation requires an automation object in the scenario.")
         godot_bin = resolve_godot_binary(args.godot_bin)
         artifacts_dir = make_artifacts_dir(args.artifacts_dir)
         port = choose_free_port()
@@ -242,6 +266,20 @@ def main() -> int:
         print(f"Artifacts: {artifacts_dir}")
         print("Processes: " + ", ".join(f"{role}={process.pid}" for role, process, _ in roles))
         if args.exit_after_ready:
+            return 0
+        if args.run_automation:
+            completion_events = {
+                role: wait_for_event(
+                    role=role,
+                    event_name="custom_session_complete",
+                    process=process,
+                    event_path=event_path,
+                    timeout_sec=args.timeout_sec,
+                )
+                for role, process, event_path in roles
+            }
+            verify_automation_states(completion_events)
+            print("Custom session automation passed on every peer.")
             return 0
         print("Press Ctrl-C to stop the session.")
         while all(process.poll() is None for process in processes):

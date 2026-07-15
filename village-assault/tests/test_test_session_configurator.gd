@@ -4,6 +4,7 @@ extends GdUnitTestSuite
 
 const GAME_SCENE: PackedScene = preload("res://scenes/game.tscn")
 const EXAMPLE_SCENARIO: String = "res://test_sessions/fog_cavern.json"
+const GROUPED_MINING_SCENARIO: String = "res://test_sessions/grouped_mining_multiplayer.json"
 
 func _reset_runtime_state() -> void:
 	NetworkManager.stop_auto_reconnect()
@@ -42,6 +43,40 @@ func test_automatic_unit_ids_avoid_explicit_ids() -> void:
 	}
 
 	assert_array(configurator.get_troop_unit_ids(scenario)).is_equal([10002, 10001])
+
+func test_grouped_mining_scenario_exposes_typed_automation_values() -> void:
+	var configurator := TestSessionConfigurator.new()
+	var scenario := configurator.load_scenario(GROUPED_MINING_SCENARIO)
+
+	assert_array(configurator.errors).is_empty()
+	assert_array(configurator.get_automation_unit_ids(scenario)).is_equal([201, 202])
+	assert_array(configurator.get_automation_tiles(scenario)).is_equal([
+		Vector2i(40, 19),
+		Vector2i(41, 19),
+		Vector2i(42, 19),
+	])
+
+func test_grouped_mining_automation_rejects_enemy_and_non_miner_units() -> void:
+	var configurator := TestSessionConfigurator.new()
+	var scenario := {
+		"map": {"width": 16, "height": 16, "surface_y": 4},
+		"troops": [
+			{"type": "troop_miner", "team": "left", "tile": [3, 3], "unit_id": 1},
+			{"type": "troop_grunt", "team": "right", "tile": [12, 3], "unit_id": 2},
+		],
+		"automation": {
+			"type": "grouped_mining",
+			"command_role": "client",
+			"job": "dig",
+			"unit_ids": [1, 2],
+			"tiles": [[12, 5]],
+		},
+	}
+
+	var message := "; ".join(configurator.validate_scenario(scenario))
+
+	assert_bool(message.contains("automation unit 1 must belong to the right team")).is_true()
+	assert_bool(message.contains("automation unit 2 must be a troop_miner")).is_true()
 
 func test_validation_reports_out_of_bounds_shapes_and_duplicate_units() -> void:
 	var configurator := TestSessionConfigurator.new()

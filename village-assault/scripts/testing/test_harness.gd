@@ -9,6 +9,13 @@ const SCENARIO_GAME_RECONNECT: String = "game_reconnect"
 const SCENARIO_LOBBY_RECONNECT: String = "lobby_reconnect"
 const SCENARIO_CUSTOM_SESSION: String = "custom_session"
 const POST_RECONNECT_DEADLINE_MSEC: int = 5000
+const GROUPED_MINING_ASSIGNMENT_HOLD_MSEC: int = 750
+const MINER_JOB_IDLE: int = 0
+const MINER_JOB_DIG: int = 1
+const TACTICAL_ORDER_DEFEND: int = 2
+const TROOP_STATUS_DEFENDING: int = 3
+const TROOP_STATUS_MINING: int = 6
+const TROOP_STATUS_MOVING_TO_DIG_SITE: int = 7
 const TEST_SESSION_CONFIGURATOR: GDScript = preload(
 	"res://scripts/testing/test_session_configurator.gd"
 )
@@ -27,6 +34,14 @@ var _session_player_count: int = 1
 var _session_config: Dictionary = {}
 var _session_configurator: TestSessionConfigurator = null
 var _custom_session_applied: bool = false
+var _custom_session_ready: bool = false
+var _custom_automation_command_sent: bool = false
+var _custom_automation_assignment_observed: bool = false
+var _custom_automation_progress_observed: bool = false
+var _custom_automation_workers_released: bool = false
+var _custom_automation_release_msec: int = -1
+var _custom_automation_deadline_msec: int = -1
+var _custom_automation_complete_sent: bool = false
 
 var _host_started: bool = false
 var _join_started: bool = false
@@ -91,7 +106,9 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if not _active:
 		return
-	if _role == ROLE_CLIENT:
+	if _scenario == SCENARIO_CUSTOM_SESSION:
+		_drive_custom_session_automation()
+	elif _role == ROLE_CLIENT:
 		match _scenario:
 			SCENARIO_GAME_RECONNECT:
 				_drive_client_game_scenario()
@@ -204,12 +221,228 @@ func _apply_custom_session(game: Node) -> void:
 				return
 			await get_tree().process_frame
 	_session_configurator.apply_camera(game, _session_config, _role)
+	_custom_session_ready = true
+	var automation: Dictionary = _session_config.get("automation", {})
+	if not automation.is_empty():
+		_custom_automation_deadline_msec = Time.get_ticks_msec() \
+			+ int(float(automation.get("timeout_sec", 15.0)) * 1000.0)
 	_emit_event("custom_session_ready", {
 		"config": _session_config_path,
 		"name": String(_session_config.get("name", _session_config_path.get_file())),
 		"spawned_unit_ids": spawned_ids,
 		"snapshot": game.call("get_test_snapshot"),
 	})
+
+func _drive_custom_session_automation() -> void:
+	if not _custom_session_ready or _custom_automation_complete_sent:
+		return
+	if _current_game == null or not is_instance_valid(_current_game):
+		return
+	var automation: Dictionary = _session_config.get("automation", {})
+	if automation.is_empty():
+		return
+	var unit_ids := _session_configurator.get_automation_unit_ids(_session_config)
+	var tiles := _session_configurator.get_automation_tiles(_session_config)
+	if _role == String(automation.get("command_role", "")) \
+		and not _custom_automation_command_sent:
+		_custom_automation_command_sent = true
+		if not _issue_grouped_mining_command(_current_game, unit_ids, tiles):
+			_fail_custom_automation("Failed to issue grouped mining command")
+			return
+	if not _custom_automation_assignment_observed \
+		and _has_expected_grouped_mining_assignment(_current_game, unit_ids, tiles):
+		_custom_automation_assignment_observed = true
+		_emit_event("custom_session_assignment", {
+			"state": _capture_grouped_mining_state(_current_game, unit_ids, tiles),
+		})
+		if _role == ROLE_HOST:
+			_custom_automation_release_msec = Time.get_ticks_msec() \
+				+ GROUPED_MINING_ASSIGNMENT_HOLD_MSEC
+	if _role == ROLE_HOST \
+		and _custom_automation_assignment_observed \
+		and not _custom_automation_workers_released \
+		and Time.get_ticks_msec() >= _custom_automation_release_msec:
+		_custom_automation_workers_released = true
+		_set_units_physics_processing(_current_game, unit_ids, true)
+		_emit_event("custom_session_workers_released", {
+			"state": _capture_grouped_mining_state(_current_game, unit_ids, tiles),
+		})
+	if _custom_automation_assignment_observed \
+		and not _custom_automation_progress_observed \
+		and _has_grouped_mining_progress(_current_game, unit_ids, tiles):
+		_custom_automation_progress_observed = true
+		_emit_event("custom_session_progress", {
+			"state": _capture_grouped_mining_state(_current_game, unit_ids, tiles),
+		})
+	if _custom_automation_progress_observed \
+		and _has_completed_grouped_mining(_current_game, unit_ids, tiles):
+		_custom_automation_complete_sent = true
+		_emit_event("custom_session_complete", {
+			"state": _capture_grouped_mining_state(_current_game, unit_ids, tiles),
+		})
+		return
+	if _custom_automation_deadline_msec > 0 \
+		and Time.get_ticks_msec() >= _custom_automation_deadline_msec:
+		_fail_custom_automation("Timed out waiting for grouped mining completion")
+
+func _issue_grouped_mining_command(
+	game: Node,
+	unit_ids: Array[int],
+	tiles: Array[Vector2i]
+) -> bool:
+	game.call("select_troops_by_ids", unit_ids)
+	if game.call("get_active_troop_selection_ids") != unit_ids:
+		return false
+	game.call("_on_role_action_requested", "miner_dig", unit_ids)
+	for tile in tiles:
+		if not bool(game.call("toggle_draft_tile", tile)):
+			return false
+	game.call("confirm_mining_selection")
+	_emit_event("custom_session_command_issued", {
+		"unit_ids": unit_ids,
+		"tiles": _tile_array_for_json(tiles),
+	})
+	return true
+
+func _has_expected_grouped_mining_assignment(
+	game: Node,
+	unit_ids: Array[int],
+	tiles: Array[Vector2i]
+) -> bool:
+	var expected: Dictionary = {}
+	for tile in tiles:
+		expected[tile] = true
+	var assigned: Dictionary = {}
+	for unit_id in unit_ids:
+		var unit := game.call("get_unit_by_id", unit_id) as Node
+		if unit == null or not unit.has_method("get_miner_job"):
+			return false
+		var job: Dictionary = unit.call("get_miner_job")
+		if int(job.get("job_type", MINER_JOB_IDLE)) != MINER_JOB_DIG:
+			return false
+		var unit_tiles: Array = job.get("dig_tiles", [])
+		if unit_tiles.is_empty():
+			return false
+		for raw_tile in unit_tiles:
+			var tile: Vector2i = raw_tile
+			if not expected.has(tile) or assigned.has(tile):
+				return false
+			assigned[tile] = true
+	return assigned.size() == expected.size()
+
+func _has_grouped_mining_progress(
+	game: Node,
+	unit_ids: Array[int],
+	tiles: Array[Vector2i]
+) -> bool:
+	var territory := game.get_node_or_null("TerritoryManager") as TerritoryManager
+	if territory == null:
+		return false
+	var destroyed_count := 0
+	for tile in tiles:
+		if not territory.is_mineable_terrain_tile(tile):
+			destroyed_count += 1
+	if destroyed_count <= 0 or destroyed_count >= tiles.size():
+		return false
+	for unit_id in unit_ids:
+		var unit := game.call("get_unit_by_id", unit_id) as Node
+		if unit == null:
+			continue
+		if int(unit.get("current_status")) in [
+			TROOP_STATUS_MINING,
+			TROOP_STATUS_MOVING_TO_DIG_SITE,
+		]:
+			return true
+	return false
+
+func _has_completed_grouped_mining(
+	game: Node,
+	unit_ids: Array[int],
+	tiles: Array[Vector2i]
+) -> bool:
+	var territory := game.get_node_or_null("TerritoryManager") as TerritoryManager
+	if territory == null:
+		return false
+	for tile in tiles:
+		if territory.is_mineable_terrain_tile(tile):
+			return false
+	for unit_id in unit_ids:
+		var unit := game.call("get_unit_by_id", unit_id) as Node2D
+		if unit == null or not unit.has_method("get_miner_job"):
+			return false
+		var job: Dictionary = unit.call("get_miner_job")
+		if int(job.get("job_type", -1)) != MINER_JOB_IDLE:
+			return false
+		if int(unit.get("current_order")) != TACTICAL_ORDER_DEFEND:
+			return false
+		if int(unit.get("current_status")) != TROOP_STATUS_DEFENDING:
+			return false
+		var stand_tile := territory.get_standable_tile_for_world_position(unit.position)
+		if unit.get("defense_anchor_tile") != stand_tile:
+			return false
+	return true
+
+func _capture_grouped_mining_state(
+	game: Node,
+	unit_ids: Array[int],
+	tiles: Array[Vector2i]
+) -> Dictionary:
+	var territory := game.get_node_or_null("TerritoryManager") as TerritoryManager
+	var unit_states: Array[Dictionary] = []
+	var destroyed_count := 0
+	for tile in tiles:
+		if not territory.is_mineable_terrain_tile(tile):
+			destroyed_count += 1
+	for unit_id in unit_ids:
+		var unit := game.call("get_unit_by_id", unit_id) as Node2D
+		if unit == null:
+			continue
+		var job: Dictionary = unit.call("get_miner_job")
+		unit_states.append({
+			"unit_id": unit_id,
+			"job_type": int(job.get("job_type", -1)),
+			"dig_tiles": _tile_array_for_json(job.get("dig_tiles", [])),
+			"current_order": int(unit.get("current_order")),
+			"current_status": int(unit.get("current_status")),
+			"defense_anchor": _tile_for_json(unit.get("defense_anchor_tile")),
+			"stand_tile": _tile_for_json(
+				territory.get_standable_tile_for_world_position(unit.position)
+			),
+		})
+	return {
+		"unit_states": unit_states,
+		"target_tiles": _tile_array_for_json(tiles),
+		"target_tiles_destroyed": destroyed_count == tiles.size(),
+		"target_tiles_destroyed_count": destroyed_count,
+	}
+
+func _set_units_physics_processing(game: Node, unit_ids: Array[int], enabled: bool) -> void:
+	for unit_id in unit_ids:
+		var unit := game.call("get_unit_by_id", unit_id) as Node
+		if unit != null:
+			unit.set_physics_process(enabled)
+
+func _fail_custom_automation(message: String) -> void:
+	_custom_automation_complete_sent = true
+	var payload := {
+		"message": message,
+		"snapshot": _capture_scene_snapshot(),
+	}
+	if _current_game != null and is_instance_valid(_current_game):
+		var unit_ids := _session_configurator.get_automation_unit_ids(_session_config)
+		var tiles := _session_configurator.get_automation_tiles(_session_config)
+		payload["state"] = _capture_grouped_mining_state(_current_game, unit_ids, tiles)
+	_emit_event("failure", payload)
+
+func _tile_array_for_json(raw_tiles: Variant) -> Array[Array]:
+	var result: Array[Array] = []
+	for raw_tile in raw_tiles:
+		result.append(_tile_for_json(raw_tile))
+	return result
+
+func _tile_for_json(raw_tile: Variant) -> Array:
+	var tile: Vector2i = raw_tile
+	return [tile.x, tile.y]
 
 func _game_has_units(game: Node, unit_ids: Array[int]) -> bool:
 	for unit_id in unit_ids:

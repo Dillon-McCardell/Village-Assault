@@ -8,6 +8,7 @@ const MiningSelectionState = preload("res://scripts/game.gd").MiningSelectionSta
 const MinerJobType = preload("res://scripts/game.gd").MinerJobType
 const TacticalOrder = preload("res://scripts/game.gd").TacticalOrder
 const MinerRuntimeState = preload("res://scripts/troops/troop_miner.gd").MinerRuntimeState
+const TroopStatus = preload("res://scripts/test_unit.gd").TroopStatus
 
 func _reset_runtime_state() -> void:
 	NetworkManager.stop_auto_reconnect()
@@ -352,11 +353,21 @@ func test_miner_assignment_mines_tile_into_underground_air() -> void:
 	game.toggle_draft_tile(tile)
 	game.confirm_mining_selection()
 
-	for _i in range(12):
-		miner._physics_process(0.5)
+	for _i in range(200):
+		miner._physics_process(0.05)
+		if int(miner.get_miner_job().get("job_type", MinerJobType.IDLE)) == MinerJobType.IDLE:
+			break
 
 	assert_bool(game.territory_manager.has_ground_at_tile(tile)).is_false()
 	assert_bool(game.territory_manager.is_underground_tile(tile)).is_true()
+	assert_int(int(miner.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(
+		MinerJobType.IDLE
+	)
+	assert_int(miner.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(miner.current_status).is_equal(TroopStatus.DEFENDING)
+	assert_vector(miner.defense_anchor_tile).is_equal(
+		game.territory_manager.get_standable_tile_for_world_position(miner.position)
+	)
 
 	_clear_node(game)
 	_reset_runtime_state()
@@ -788,6 +799,22 @@ func test_single_ore_depletion_keeps_full_miner_returning_until_deposit() -> voi
 	assert_int(int(miner.get_runtime_snapshot().get("runtime_state", -1))).is_equal(MinerRuntimeState.RETURNING_TO_BASE)
 	assert_int(int(miner.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(MinerJobType.HARVEST)
 	assert_array(miner.get_miner_job().get("assigned_ore_tiles", [])).is_empty()
+
+	var territory := game.territory_manager as TerritoryManager
+	var base_tile := territory.get_standable_tile_for_world_position(
+		territory.get_base_anchor_world(GameState.Team.LEFT)
+	)
+	var money_before_deposit := GameState.get_money_for_peer(1)
+	miner.position = territory.stand_tile_to_world_position(base_tile)
+	miner._physics_process(0.1)
+
+	assert_int(GameState.get_money_for_peer(1)).is_equal(money_before_deposit + 20)
+	assert_int(int(miner.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(
+		MinerJobType.IDLE
+	)
+	assert_int(miner.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(miner.current_status).is_equal(TroopStatus.DEFENDING)
+	assert_vector(miner.defense_anchor_tile).is_equal(base_tile)
 
 	_clear_node(game)
 	_reset_runtime_state()

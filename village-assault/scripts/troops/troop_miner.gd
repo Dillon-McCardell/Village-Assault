@@ -186,8 +186,7 @@ func _process_dig_job(delta: float, current_stand_tile: Vector2i) -> void:
 	_prune_completed_dig_tiles()
 	var dig_tiles: Array[Vector2i] = _typed_vector_array(_job_payload.get("dig_tiles", []))
 	if dig_tiles.is_empty():
-		set_miner_job(_make_idle_job())
-		_set_runtime_state(MinerRuntimeState.IDLE)
+		_complete_role_job()
 		return
 	if current_stand_tile == INVALID_TILE:
 		_set_runtime_state(MinerRuntimeState.IDLE)
@@ -240,8 +239,7 @@ func _process_harvest_job(delta: float, current_stand_tile: Vector2i) -> void:
 		_set_blocked_return_state(current_stand_tile, base_target)
 		return
 	if ore_queue.is_empty() or active_ore_index >= ore_queue.size():
-		set_miner_job(_make_idle_job())
-		_set_runtime_state(MinerRuntimeState.IDLE)
+		_complete_role_job()
 		return
 	var ore_tile := ore_queue[active_ore_index]
 	if not _territory_manager.is_ore_tile(ore_tile):
@@ -434,8 +432,7 @@ func _advance_or_finish_harvest_queue(active_index: int) -> void:
 	_remove_ore_from_queue(active_index)
 	var ore_queue: Array[Vector2i] = _typed_vector_array(_job_payload.get("assigned_ore_tiles", []))
 	if ore_queue.is_empty():
-		set_miner_job(_make_idle_job())
-		_set_runtime_state(MinerRuntimeState.IDLE)
+		_complete_role_job()
 		return
 	_job_payload["active_ore_index"] = mini(active_index, ore_queue.size() - 1)
 	_miner_job_serialized = var_to_str(_job_payload)
@@ -454,6 +451,9 @@ func _remove_ore_from_queue(index: int) -> void:
 func _remove_dig_tile(tile: Vector2i) -> void:
 	var dig_tiles: Array[Vector2i] = _typed_vector_array(_job_payload.get("dig_tiles", []))
 	dig_tiles.erase(tile)
+	if dig_tiles.is_empty():
+		_complete_role_job()
+		return
 	_job_payload["dig_tiles"] = dig_tiles
 	_job_payload["dig_tiles_lookup"] = _build_lookup(dig_tiles)
 	_miner_job_serialized = var_to_str(_job_payload)
@@ -464,6 +464,16 @@ func _set_runtime_state(new_state: int) -> void:
 	_runtime_snapshot["runtime_state"] = new_state
 	current_status = _status_for_runtime_state(new_state)
 	DebugConsole.log_msg("MiningJob: miner=%d runtime=%s" % [unit_id, str(new_state)])
+
+func _complete_role_job() -> void:
+	var completion_tile := _get_exact_stand_tile_from_position()
+	if completion_tile == INVALID_TILE and _territory_manager != null:
+		completion_tile = _territory_manager.get_standable_tile_for_world_position(position)
+	set_miner_job(_make_idle_job())
+	issue_tactical_order(TacticalOrder.DEFEND)
+	if completion_tile != INVALID_TILE:
+		defense_anchor_tile = completion_tile
+	_set_runtime_state(MinerRuntimeState.IDLE)
 
 func _refresh_runtime_snapshot() -> void:
 	_runtime_snapshot["path_tiles"] = _path_tiles.duplicate()
@@ -566,7 +576,15 @@ func _status_for_runtime_state(runtime_state: int) -> int:
 		MinerRuntimeState.RETURNING_TO_BASE:
 			return TroopStatus.RETURNING_ORE_TO_BASE
 		_:
-			return TroopStatus.IDLE
+			match current_order:
+				TacticalOrder.MOVE:
+					return TroopStatus.MOVING
+				TacticalOrder.ADVANCE:
+					return TroopStatus.ADVANCING
+				TacticalOrder.RETREAT:
+					return TroopStatus.RETREATING
+				_:
+					return TroopStatus.DEFENDING
 
 func _deserialize_payload(payload_text: String) -> Dictionary:
 	if payload_text.is_empty():

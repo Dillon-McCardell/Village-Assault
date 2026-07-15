@@ -19,6 +19,18 @@ Launch host and client windows against the same scenario:
 Use `--headless --exit-after-ready` for an automated setup smoke test. Event and process
 logs are written to the artifact directory printed by the launcher.
 
+Scenarios with an `automation` object can run an end-to-end multiplayer acceptance flow:
+
+```sh
+./tools/run_test_session.py \
+  village-assault/test_sessions/grouped_mining_multiplayer.json \
+  --players 2 --headless --run-automation
+```
+
+The grouped mining flow issues the role action from the configured peer, waits for both
+peers to observe the partitioned jobs, releases the frozen workers, and verifies matching
+terrain, task, order, status, and defense-anchor state after completion.
+
 ## Scenario Schema
 
 The `map` object requires positive `width` and `height` values and accepts a deterministic
@@ -55,3 +67,9 @@ types are `troop_grunt`, `troop_ranger`, `troop_brute`, `troop_scout`, and `troo
 
 Camera settings may define a `default` preset and override it with `host` or `client`.
 Each preset accepts a center `tile` and scalar `zoom`.
+
+An optional `automation` object currently supports `type: "grouped_mining"`, a
+`command_role` of `host` or `client`, `job: "dig"`, selected miner `unit_ids`, target
+`tiles`, and an optional positive `timeout_sec`. Automated workers should be marked
+`frozen` so both peers can observe their initial assignments before the harness releases
+the host-authoritative simulation.

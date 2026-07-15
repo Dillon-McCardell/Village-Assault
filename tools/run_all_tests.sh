@@ -15,10 +15,11 @@ Runs all automated test suites for Village Assault:
 - Full GdUnit suite
 - Reconnect acceptance harness (`game_reconnect`)
 - Reconnect acceptance harness (`lobby_reconnect`)
+- Grouped mining host/client acceptance scenario
 
 Options:
   --godot-bin PATH  Path to the Godot executable.
-  --no-headless     Run reconnect harness windows visibly.
+  --no-headless     Run multiplayer harness windows visibly.
   -h, --help        Show this help text.
 USAGE
 }
@@ -89,6 +90,18 @@ printf '\n==> Running reconnect harness: lobby_reconnect\n'
     --godot-bin "$GODOT_BIN" \
     --timeout-sec 30 \
     --scenario lobby_reconnect \
+    "${HARNESS_ARGS[@]}"
+)
+
+printf '\n==> Running multiplayer scenario: grouped mining\n'
+(
+  cd "$ROOT_DIR"
+  python3 tools/run_test_session.py \
+    village-assault/test_sessions/grouped_mining_multiplayer.json \
+    --players 2 \
+    --godot-bin "$GODOT_BIN" \
+    --timeout-sec 30 \
+    --run-automation \
     "${HARNESS_ARGS[@]}"
 )
 

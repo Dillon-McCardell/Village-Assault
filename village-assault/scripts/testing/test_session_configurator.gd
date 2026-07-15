@@ -50,6 +50,7 @@ func validate_scenario(scenario: Dictionary) -> PackedStringArray:
 	_validate_edit_group(map_config.get("fill", {}), "map.fill", width, height, validation_errors)
 	_validate_troops(scenario.get("troops", []), width, height, validation_errors)
 	_validate_camera(scenario.get("camera", {}), width, height, validation_errors)
+	_validate_automation(scenario, width, height, validation_errors)
 	return validation_errors
 
 func get_world_settings(scenario: Dictionary) -> Dictionary:
@@ -120,6 +121,20 @@ func get_troop_unit_ids(scenario: Dictionary) -> Array[int]:
 		result.append(next_automatic_id)
 		reserved_ids[next_automatic_id] = true
 		next_automatic_id += 1
+	return result
+
+func get_automation_unit_ids(scenario: Dictionary) -> Array[int]:
+	var result: Array[int] = []
+	var automation: Dictionary = scenario.get("automation", {})
+	for raw_unit_id in automation.get("unit_ids", []):
+		result.append(int(raw_unit_id))
+	return result
+
+func get_automation_tiles(scenario: Dictionary) -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	var automation: Dictionary = scenario.get("automation", {})
+	for raw_tile in automation.get("tiles", []):
+		result.append(_vector2i_from_array(raw_tile))
 	return result
 
 func apply_camera(game: Node, scenario: Dictionary, role: String) -> void:
@@ -285,6 +300,59 @@ func _validate_camera(
 			_validate_point(config["tile"], "camera.%s.tile" % role, width, height, validation_errors)
 		if config.has("zoom") and float(config["zoom"]) <= 0.0:
 			validation_errors.append("camera.%s.zoom must be positive" % role)
+
+func _validate_automation(
+	scenario: Dictionary,
+	width: int,
+	height: int,
+	validation_errors: PackedStringArray
+) -> void:
+	if not scenario.has("automation"):
+		return
+	var raw_automation: Variant = scenario.get("automation")
+	if not raw_automation is Dictionary:
+		validation_errors.append("automation must be an object")
+		return
+	var automation: Dictionary = raw_automation
+	if String(automation.get("type", "")) != "grouped_mining":
+		validation_errors.append("automation.type must be grouped_mining")
+	var command_role := String(automation.get("command_role", ""))
+	if command_role not in ["host", "client"]:
+		validation_errors.append("automation.command_role must be host or client")
+	if String(automation.get("job", "")) != "dig":
+		validation_errors.append("automation.job must be dig")
+	var raw_unit_ids: Variant = automation.get("unit_ids", [])
+	if not raw_unit_ids is Array or raw_unit_ids.is_empty():
+		validation_errors.append("automation.unit_ids must be a non-empty array")
+	else:
+		var troop_ids := get_troop_unit_ids(scenario)
+		var troops: Array = scenario.get("troops", [])
+		var selected_ids: Dictionary = {}
+		for raw_unit_id in raw_unit_ids:
+			var unit_id := int(raw_unit_id)
+			if selected_ids.has(unit_id):
+				validation_errors.append("automation.unit_ids duplicates %d" % unit_id)
+			selected_ids[unit_id] = true
+			var troop_index := troop_ids.find(unit_id)
+			if troop_index == -1:
+				validation_errors.append("automation.unit_ids references unknown unit %d" % unit_id)
+				continue
+			var troop: Dictionary = troops[troop_index]
+			if String(troop.get("type", "")) != "troop_miner":
+				validation_errors.append("automation unit %d must be a troop_miner" % unit_id)
+			var expected_team := "left" if command_role == "host" else "right"
+			if command_role in ["host", "client"] \
+				and String(troop.get("team", "")).to_lower() != expected_team:
+				validation_errors.append(
+					"automation unit %d must belong to the %s team" % [unit_id, expected_team]
+				)
+	var raw_tiles: Variant = automation.get("tiles", [])
+	if not raw_tiles is Array or raw_tiles.is_empty():
+		validation_errors.append("automation.tiles must be a non-empty array")
+	else:
+		_validate_point_list(raw_tiles, "automation.tiles", width, height, validation_errors)
+	if float(automation.get("timeout_sec", 15.0)) <= 0.0:
+		validation_errors.append("automation.timeout_sec must be positive")
 
 func _validate_point_list(
 	raw_points: Variant,
