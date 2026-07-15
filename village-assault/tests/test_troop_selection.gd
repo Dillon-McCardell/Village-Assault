@@ -4,6 +4,7 @@ extends GdUnitTestSuite
 
 const GAME_SCENE: PackedScene = preload("res://scenes/game.tscn")
 const TacticalOrder = preload("res://scripts/game.gd").TacticalOrder
+const TroopStatus = preload("res://scripts/test_unit.gd").TroopStatus
 
 var _next_test_port: int = NetworkManager.DEFAULT_PORT + 700
 
@@ -66,6 +67,10 @@ func _click_troop(game: Node, troop: Node2D, shift_pressed: bool = false) -> voi
 	var screen_position: Vector2 = game.world_to_screen_position(troop.global_position)
 	game._input(_mouse_button(screen_position, MOUSE_BUTTON_LEFT, true, shift_pressed))
 	game._input(_mouse_button(screen_position, MOUSE_BUTTON_LEFT, false, shift_pressed))
+
+func _open_roster(game: Node, item_id: String) -> void:
+	var type_button := game.troop_command_ui.get_type_button(item_id) as Button
+	type_button.gui_input.emit(_mouse_button(Vector2.ZERO, MOUSE_BUTTON_RIGHT, true))
 
 func test_click_and_shift_click_toggle_selection_cohort() -> void:
 	var game := _start_host_game()
@@ -159,6 +164,96 @@ func test_right_click_move_routes_target_to_active_selection() -> void:
 	assert_int(grunt.current_order).is_equal(TacticalOrder.MOVE)
 	assert_vector(grunt.command_target_tile).is_equal(target_tile)
 	assert_int(ranger.current_order).is_equal(TacticalOrder.DEFEND)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_type_roster_opens_from_right_click_and_disclosure() -> void:
+	var game := _start_host_game()
+	_spawn_troop(game, "troop_miner", 1, 12)
+	_spawn_troop(game, "troop_miner", 2, 16)
+	_spawn_troop(game, "troop_miner", 3, 20)
+	game.select_troops_by_ids([1, 2, 3])
+
+	_open_roster(game, "troop_miner")
+
+	assert_bool(game.troop_command_ui.get_roster_panel().visible).is_true()
+	assert_int(game.troop_command_ui.get_roster_rows().get_child_count()).is_equal(3)
+	assert_str(game.troop_command_ui.get_roster_rows().get_child(0).name).is_equal("RosterRow_1")
+	assert_bool(game.troop_command_ui.get_roster_all_checkbox().button_pressed).is_true()
+
+	game.troop_command_ui.close_roster()
+	game.troop_command_ui.get_type_disclosure_button("troop_miner").pressed.emit()
+	assert_bool(game.troop_command_ui.get_roster_panel().visible).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_roster_narrows_three_miners_and_commands_only_active_rows() -> void:
+	var game := _start_host_game()
+	var first := _spawn_troop(game, "troop_miner", 1, 12)
+	var second := _spawn_troop(game, "troop_miner", 2, 16)
+	var third := _spawn_troop(game, "troop_miner", 3, 20)
+	game.select_troops_by_ids([1, 2, 3])
+	_open_roster(game, "troop_miner")
+
+	game.troop_command_ui.get_roster_row(2).gui_input.emit(
+		_mouse_button(Vector2.ZERO, MOUSE_BUTTON_LEFT, true)
+	)
+	game._on_tactical_order_requested(TacticalOrder.ADVANCE)
+
+	assert_array(game.get_troop_selection_cohort_ids()).contains_exactly([1, 2, 3])
+	assert_array(game.get_active_troop_selection_ids()).contains_exactly([1, 3])
+	assert_int(first.current_order).is_equal(TacticalOrder.ADVANCE)
+	assert_int(second.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(third.current_order).is_equal(TacticalOrder.ADVANCE)
+	assert_bool(game.troop_command_ui.get_roster_panel().visible).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_roster_shift_click_toggles_stable_contiguous_range() -> void:
+	var game := _start_host_game()
+	for unit_id in range(1, 5):
+		_spawn_troop(game, "troop_grunt", unit_id, 8 + unit_id * 4)
+	game.select_troops_by_ids([1, 2, 3, 4])
+	game.set_troop_type_active("troop_grunt", false)
+	_open_roster(game, "troop_grunt")
+
+	game.troop_command_ui.get_roster_row(2).gui_input.emit(
+		_mouse_button(Vector2.ZERO, MOUSE_BUTTON_LEFT, true)
+	)
+	game.troop_command_ui.get_roster_row(4).gui_input.emit(
+		_mouse_button(Vector2.ZERO, MOUSE_BUTTON_LEFT, true, true)
+	)
+
+	assert_array(game.get_active_troop_selection_ids()).contains_exactly([2, 3, 4])
+	assert_bool(game.troop_command_ui.get_roster_all_checkbox().button_pressed).is_false()
+	assert_bool(game.troop_command_ui.get_roster_panel().visible).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_roster_refreshes_replicated_health_and_status_without_reordering() -> void:
+	var game := _start_host_game()
+	var first := _spawn_troop(game, "troop_ranger", 1, 12)
+	_spawn_troop(game, "troop_ranger", 2, 18)
+	game.select_troops_by_ids([1, 2])
+	_open_roster(game, "troop_ranger")
+
+	first.max_health = 10
+	first.current_health = 3
+	first.current_status = TroopStatus.ENGAGING_ENEMY
+	game._refresh_troop_selection_state()
+	var first_row := game.troop_command_ui.get_roster_row(1) as Button
+	var health := first_row.find_child("HealthBar", true, false) as ProgressBar
+	var status := first_row.find_child("StatusIcon", true, false) as Label
+
+	assert_float(health.value).is_equal_approx(30.0, 0.01)
+	assert_str(health.tooltip_text).is_equal("Health: 3/10")
+	assert_str(status.text).is_equal("X")
+	assert_str(status.tooltip_text).is_equal("Engaging enemy")
+	assert_str(game.troop_command_ui.get_roster_rows().get_child(0).name).is_equal("RosterRow_1")
 
 	_clear_node(game)
 	_reset_runtime_state()

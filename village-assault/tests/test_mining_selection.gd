@@ -40,9 +40,12 @@ func _mining_menu(game: Node) -> Control:
 func _role_button(game: Node) -> Button:
 	return game.troop_command_ui.get_role_button() as Button
 
-func _open_selected_miner_picker(game: Node, unit_id: int = 1) -> void:
-	game.select_troops_by_ids([unit_id])
+func _open_role_menu(game: Node, unit_ids: Array = [1]) -> void:
+	game.select_troops_by_ids(unit_ids)
 	_role_button(game).emit_signal("pressed")
+
+func _role_menu(game: Node) -> PanelContainer:
+	return game.troop_command_ui.get_role_menu_panel() as PanelContainer
 
 func _picker_panel(game: Node) -> Panel:
 	return (_mining_menu(game) as Control).get_picker_panel() as Panel
@@ -98,48 +101,125 @@ func _shop_button(game: Node) -> Button:
 func _press_job_button(game: Node, button_name: String) -> void:
 	(_job_panel(game).find_child(button_name, true, false) as Button).emit_signal("pressed")
 
-func test_role_actions_button_opens_centered_miner_picker() -> void:
+func test_role_actions_button_opens_capability_driven_miner_actions() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_open_selected_miner_picker(game)
+	_open_role_menu(game)
 
-	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
-	assert_bool(_picker_panel(game).visible).is_true()
-	assert_int(_picker_grid(game).get_child_count()).is_equal(1)
+	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.INACTIVE)
+	assert_bool(_role_menu(game).visible).is_true()
+	assert_bool(game.troop_command_ui.get_role_action_button("miner_dig") != null).is_true()
+	assert_bool(game.troop_command_ui.get_role_action_button("miner_harvest") != null).is_true()
+	assert_bool(_picker_panel(game).visible).is_false()
 	assert_bool((_mining_menu(game).get_origin_button() as Button).visible).is_false()
 
 	_clear_node(game)
 	_reset_runtime_state()
 
-func test_pressing_role_actions_again_closes_miner_picker() -> void:
+func test_pressing_role_actions_again_closes_grouped_menu() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_open_selected_miner_picker(game)
-	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
-	assert_bool(_picker_panel(game).visible).is_true()
+	_open_role_menu(game)
+	assert_bool(_role_menu(game).visible).is_true()
 
 	_role_button(game).emit_signal("pressed")
 
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.INACTIVE)
-	assert_bool(_picker_panel(game).visible).is_false()
+	assert_bool(_role_menu(game).visible).is_false()
 
 	_clear_node(game)
 	_reset_runtime_state()
 
-func test_pressing_other_button_closes_miner_picker() -> void:
+func test_pressing_other_button_closes_role_actions_menu() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_open_selected_miner_picker(game)
-	assert_bool(_picker_panel(game).visible).is_true()
+	_open_role_menu(game)
+	assert_bool(_role_menu(game).visible).is_true()
 
 	var shop_button := _shop_button(game)
 	shop_button.emit_signal("pressed")
 
 	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.INACTIVE)
-	assert_bool(_picker_panel(game).visible).is_false()
+	assert_bool(_role_menu(game).visible).is_false()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_grouped_dig_action_targets_all_active_eligible_miners() -> void:
+	var game := _start_host_game()
+	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
+	_spawn_miner(game, 2, Color(0.2, 0.9, 0.4, 1.0))
+	_spawn_troop(game, "troop_grunt", 3, GameState.Team.LEFT, 18)
+
+	_open_role_menu(game, [1, 2, 3])
+	game.troop_command_ui.get_role_action_button("miner_dig").pressed.emit()
+
+	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.SELECTING_DIG)
+	assert_array(game.get_selected_miner_unit_ids()).contains_exactly([1, 2])
+	assert_bool(_role_menu(game).visible).is_false()
+	assert_bool((_mining_menu(game).get_origin_button() as Button).visible).is_true()
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_host_partitions_one_dig_plan_across_selected_miners_deterministically() -> void:
+	var game := _start_host_game()
+	var first := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
+	var second := _spawn_miner(game, 2, Color(0.2, 0.9, 0.4, 1.0))
+	var third := _spawn_miner(game, 3, Color(0.9, 0.7, 0.2, 1.0))
+	second.position = first.position
+	third.position = first.position
+	first.issue_tactical_order(TacticalOrder.ADVANCE)
+	second.issue_tactical_order(TacticalOrder.ADVANCE)
+	third.issue_tactical_order(TacticalOrder.ADVANCE)
+	var tiles: Array[Vector2i] = [
+		_sample_ground_tile(game, 12),
+		_sample_ground_tile(game, 13),
+		_sample_ground_tile(game, 14),
+	]
+
+	var assignments: Dictionary = game._apply_miner_group_job_request(
+		[3, 1, 2],
+		MinerJobType.DIG,
+		tiles,
+		false,
+		GameState.Team.LEFT
+	)
+
+	assert_array(assignments[1]).contains_exactly([tiles[0]])
+	assert_array(assignments[2]).contains_exactly([tiles[1]])
+	assert_array(assignments[3]).contains_exactly([tiles[2]])
+	assert_array(first.get_miner_job().get("dig_tiles", [])).contains_exactly([tiles[0]])
+	assert_array(second.get_miner_job().get("dig_tiles", [])).contains_exactly([tiles[1]])
+	assert_array(third.get_miner_job().get("dig_tiles", [])).contains_exactly([tiles[2]])
+	assert_int(first.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(second.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_int(third.current_order).is_equal(TacticalOrder.DEFEND)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_group_miner_job_rejects_troops_owned_by_another_team() -> void:
+	var game := _start_host_game()
+	var enemy := _spawn_troop(game, "troop_miner", 9, GameState.Team.RIGHT, 32)
+	var tile := _sample_ground_tile(game, 18)
+	var tiles: Array[Vector2i] = [tile]
+
+	var assignments: Dictionary = game._apply_miner_group_job_request(
+		[9],
+		MinerJobType.DIG,
+		tiles,
+		false,
+		GameState.Team.LEFT
+	)
+
+	assert_dict(assignments).is_empty()
+	assert_int(int(enemy.get_miner_job().get("job_type", MinerJobType.IDLE))).is_equal(
+		MinerJobType.IDLE
+	)
 
 	_clear_node(game)
 	_reset_runtime_state()
@@ -162,7 +242,7 @@ func test_clicking_picker_slot_selects_miner() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 
-	_open_selected_miner_picker(game)
+	game.open_miner_picker()
 	var slot := _picker_grid(game).get_child(0) as Button
 	slot.emit_signal("pressed")
 
@@ -199,7 +279,7 @@ func test_picker_uses_live_miner_color_from_unit() -> void:
 	var miner := _spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 	miner.miner_top_color = Color(0.95, 0.45, 0.75, 1.0)
 
-	_open_selected_miner_picker(game)
+	game.open_miner_picker()
 
 	var slot := _picker_grid(game).get_child(0) as Button
 	var wrapper := slot.get_child(0) as Control
@@ -611,7 +691,7 @@ func test_harvest_confirm_commits_ordered_ore_queue() -> void:
 	_clear_node(game)
 	_reset_runtime_state()
 
-func test_role_actions_button_is_available_again_after_confirm() -> void:
+func test_role_actions_menu_is_available_again_after_confirm() -> void:
 	var game := _start_host_game()
 	_spawn_miner(game, 1, Color(0.2, 0.7, 0.9, 1.0))
 	var tile := _sample_ground_tile(game, 12)
@@ -621,10 +701,10 @@ func test_role_actions_button_is_available_again_after_confirm() -> void:
 	game.toggle_draft_tile(tile)
 	game.confirm_mining_selection()
 
-	_open_selected_miner_picker(game)
+	_open_role_menu(game)
 
-	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.PICKING_MINER)
-	assert_bool(_picker_panel(game).visible).is_true()
+	assert_int(game.get_mining_selection_state()).is_equal(MiningSelectionState.CONFIRMED)
+	assert_bool(_role_menu(game).visible).is_true()
 
 	_clear_node(game)
 	_reset_runtime_state()

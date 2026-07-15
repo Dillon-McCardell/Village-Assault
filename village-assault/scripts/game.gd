@@ -65,6 +65,7 @@ var _troop_items: Dictionary = {
 var _next_unit_id: int = 1
 var _mining_selection_state: int = MiningSelectionState.INACTIVE
 var _selected_miner_unit_id: int = -1
+var _selected_miner_unit_ids: Array[int] = []
 var _draft_mining_tiles: Dictionary = {}
 var _draft_mining_order: Array[Vector2i] = []
 var _invalid_draft_mining_tiles: Dictionary = {}
@@ -86,12 +87,14 @@ var _troop_command_right_pressed: bool = false
 var _troop_command_right_start: Vector2 = Vector2.ZERO
 var _troop_command_right_dragged: bool = false
 var _selected_tactical_order: int = TacticalOrder.MOVE
+var _troop_command_ui_refresh_remaining: float = 0.0
 
 const MAX_MINERS_PER_PLAYER: int = 6
 const FOG_REVEAL_SCAN_INTERVAL_SEC: float = 0.15
 const FOG_VISION_REFRESH_INTERVAL_SEC: float = 0.05
 const TROOP_VISIBILITY_FADE_DURATION_SEC: float = 0.2
 const TROOP_SELECTION_DRAG_THRESHOLD: float = 6.0
+const TROOP_COMMAND_UI_REFRESH_INTERVAL_SEC: float = 0.1
 const MINER_COLOR_PALETTE: Array[Color] = [
 	Color(0.20, 0.70, 0.90, 1.0),
 	Color(0.95, 0.45, 0.75, 1.0),
@@ -122,6 +125,7 @@ func _physics_process(delta: float) -> void:
 	_process_spawn_queue()
 	_prune_dead_miner_state()
 	_prune_troop_selection()
+	_refresh_troop_command_ui(delta)
 	_process_troop_fog_reveal(delta)
 	_refresh_local_fog_vision(delta)
 	_refresh_troop_fog_visibility(delta)
@@ -168,7 +172,9 @@ func _ready() -> void:
 		troop_command_ui.order_requested.connect(_on_tactical_order_requested)
 		troop_command_ui.restore_all_requested.connect(restore_full_troop_selection)
 		troop_command_ui.type_filter_requested.connect(filter_troop_selection_to_type)
-		troop_command_ui.role_actions_requested.connect(_on_role_actions_requested)
+		troop_command_ui.roster_selection_requested.connect(set_troop_selection_active)
+		troop_command_ui.roster_type_selection_requested.connect(set_troop_type_active)
+		troop_command_ui.role_action_requested.connect(_on_role_action_requested)
 	_connect_picker_cancel_buttons()
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
@@ -362,6 +368,10 @@ func get_local_troops() -> Array:
 		troops.append({
 			"unit_id": int(child.get_unit_id()),
 			"item_id": String(child.get("item_id")),
+			"current_health": int(child.get("current_health")),
+			"max_health": int(child.get("max_health")),
+			"current_status": int(child.get("current_status")),
+			"portrait_color": _get_troop_portrait_color(child),
 			"role_actions": child.get_role_actions() if child.has_method("get_role_actions") else [],
 			"node": child,
 		})
@@ -412,6 +422,25 @@ func restore_full_troop_selection() -> void:
 	for unit_id in _selection_cohort_ids:
 		_active_selection_ids[unit_id] = true
 	_refresh_troop_selection_state()
+
+func set_troop_selection_active(unit_ids: Array, active: bool) -> void:
+	for raw_unit_id in unit_ids:
+		var unit_id := int(raw_unit_id)
+		if not _selection_cohort_ids.has(unit_id):
+			continue
+		if active:
+			_active_selection_ids[unit_id] = true
+		else:
+			_active_selection_ids.erase(unit_id)
+	_refresh_troop_selection_state()
+
+func set_troop_type_active(item_id: String, active: bool) -> void:
+	var unit_ids: Array[int] = []
+	for unit_id in _selection_cohort_ids:
+		var troop := get_unit_by_id(unit_id)
+		if troop != null and String(troop.get("item_id")) == item_id:
+			unit_ids.append(unit_id)
+	set_troop_selection_active(unit_ids, active)
 
 func filter_troop_selection_to_type(item_id: String, additive: bool = false) -> void:
 	var matching_ids: Array[int] = []
@@ -478,6 +507,26 @@ func _prune_troop_selection() -> void:
 	if changed:
 		_refresh_troop_selection_state()
 
+func _refresh_troop_command_ui(delta: float) -> void:
+	if troop_command_ui == null or _selection_cohort_ids.is_empty():
+		_troop_command_ui_refresh_remaining = 0.0
+		return
+	_troop_command_ui_refresh_remaining -= delta
+	if _troop_command_ui_refresh_remaining > 0.0:
+		return
+	_troop_command_ui_refresh_remaining = TROOP_COMMAND_UI_REFRESH_INTERVAL_SEC
+	troop_command_ui.update_selection(
+		_get_selection_cohort_entries(),
+		_active_selection_ids,
+		_selected_tactical_order
+	)
+
+func _get_troop_portrait_color(troop: Node) -> Color:
+	var portrait := troop.get_node_or_null("TopBody") as Polygon2D
+	if portrait == null:
+		portrait = troop.get_node_or_null("Body") as Polygon2D
+	return portrait.color if portrait != null else Color(0.65, 0.68, 0.72, 1.0)
+
 func issue_troop_order_for_units(unit_ids: Array, order: int, target_world: Variant = null) -> bool:
 	var target_tile := Vector2i(-1, -1)
 	if target_world is Vector2 and territory_manager != null:
@@ -491,6 +540,9 @@ func issue_troop_order_for_units(unit_ids: Array, order: int, target_world: Vari
 
 func get_selected_miner_unit_id() -> int:
 	return _selected_miner_unit_id
+
+func get_selected_miner_unit_ids() -> Array[int]:
+	return _selected_miner_unit_ids.duplicate()
 
 func get_current_invalid_mining_tiles() -> Dictionary:
 	return _invalid_draft_mining_tiles.duplicate(true)
@@ -538,7 +590,12 @@ func _prune_dead_miner_state() -> void:
 		var unit_id := int(miner["unit_id"])
 		if not _miner_colors.has(unit_id):
 			_miner_colors[unit_id] = miner.get("color", Color(0.9, 0.78, 0.24, 1.0))
-	if _selected_miner_unit_id != -1 and not live_miner_ids.has(_selected_miner_unit_id):
+	for unit_id in _selected_miner_unit_ids.duplicate():
+		if not live_miner_ids.has(unit_id):
+			_selected_miner_unit_ids.erase(unit_id)
+	if not _selected_miner_unit_ids.is_empty():
+		_selected_miner_unit_id = _selected_miner_unit_ids[0]
+	elif _selected_miner_unit_id != -1 and not live_miner_ids.has(_selected_miner_unit_id):
 		cancel_mining_selection()
 	_refresh_mining_selection_visuals()
 
@@ -624,6 +681,9 @@ func _apply_miner_job(unit_id: int, job_payload: Dictionary) -> void:
 	var miner := get_unit_by_id(unit_id)
 	if miner == null or not is_instance_valid(miner) or not miner.has_method("set_miner_job"):
 		return
+	if int(job_payload.get("job_type", MinerJobType.IDLE)) != MinerJobType.IDLE \
+		and miner.has_method("issue_tactical_order"):
+		miner.issue_tactical_order(TacticalOrder.DEFEND)
 	miner.set_miner_job(job_payload)
 
 func _on_territory_tile_destroyed(tile_pos: Vector2i) -> void:
@@ -733,6 +793,116 @@ func _request_assign_miner_job(unit_id: int, job_payload: Dictionary) -> void:
 		return
 	DebugConsole.log_msg("MiningRPC: accept miner=%d payload=%s" % [unit_id, str(job_payload)])
 	_apply_miner_job(unit_id, job_payload)
+
+@rpc("any_peer", "reliable")
+func _request_assign_miner_group_job(
+	unit_ids: Array,
+	job_type: int,
+	tile_order: Array,
+	auto_harvest: bool
+) -> void:
+	if not _is_multiplayer_server():
+		return
+	var requester_id := multiplayer.get_remote_sender_id()
+	if requester_id == 0:
+		requester_id = 1
+	_apply_miner_group_job_request(
+		unit_ids,
+		job_type,
+		_typed_tile_array(tile_order),
+		auto_harvest,
+		GameState.get_team_for_peer(requester_id)
+	)
+
+func _apply_miner_group_job_request(
+	unit_ids: Array,
+	job_type: int,
+	tile_order: Array[Vector2i],
+	auto_harvest: bool,
+	requester_team: int
+) -> Dictionary:
+	if requester_team == GameState.Team.NONE:
+		return {}
+	var action_id := "miner_dig" if job_type == MinerJobType.DIG else "miner_harvest"
+	var typed_unit_ids: Array[int] = []
+	for raw_unit_id in unit_ids:
+		var unit_id := int(raw_unit_id)
+		var miner := get_unit_by_id(unit_id)
+		if miner == null or not is_instance_valid(miner):
+			return {}
+		if int(miner.get("team")) != requester_team:
+			return {}
+		if not _troop_supports_role_action(miner, action_id):
+			return {}
+		typed_unit_ids.append(unit_id)
+	if typed_unit_ids.is_empty():
+		return {}
+	typed_unit_ids.sort()
+	var validation_job := (
+		_build_dig_job(typed_unit_ids[0], tile_order, auto_harvest)
+		if job_type == MinerJobType.DIG
+		else _build_harvest_job(typed_unit_ids[0], tile_order)
+	)
+	if not _validate_requested_miner_job(validation_job, requester_team):
+		return {}
+	var assignments := _partition_miner_work(typed_unit_ids, tile_order)
+	for unit_id in typed_unit_ids:
+		var assigned_tiles: Array[Vector2i] = assignments.get(unit_id, [])
+		var job := (
+			_build_dig_job(unit_id, assigned_tiles, auto_harvest)
+			if job_type == MinerJobType.DIG
+			else _build_harvest_job(unit_id, assigned_tiles)
+		)
+		_apply_miner_job(unit_id, job)
+	return assignments
+
+func _partition_miner_work(unit_ids: Array[int], tile_order: Array[Vector2i]) -> Dictionary:
+	var ordered_unit_ids := unit_ids.duplicate()
+	ordered_unit_ids.sort()
+	var assignments: Dictionary = {}
+	for unit_id in ordered_unit_ids:
+		assignments[unit_id] = [] as Array[Vector2i]
+	for tile in tile_order:
+		var best_unit_id := -1
+		var best_score := INF
+		var best_workload := 0
+		for unit_id in ordered_unit_ids:
+			var assigned_tiles: Array[Vector2i] = assignments[unit_id]
+			var workload := assigned_tiles.size()
+			var score := float(_get_miner_path_distance(unit_id, tile) + workload)
+			if best_unit_id == -1 \
+				or score < best_score \
+				or (is_equal_approx(score, best_score) and workload < best_workload) \
+				or (is_equal_approx(score, best_score) and workload == best_workload and unit_id < best_unit_id):
+				best_unit_id = unit_id
+				best_score = score
+				best_workload = workload
+		(assignments[best_unit_id] as Array[Vector2i]).append(tile)
+	return assignments
+
+func _get_miner_path_distance(unit_id: int, target_tile: Vector2i) -> int:
+	var miner := get_unit_by_id(unit_id)
+	if miner == null or territory_manager == null:
+		return 1000000
+	var start_tile := territory_manager.get_standable_tile_for_world_position(miner.position)
+	if start_tile == Vector2i(-1, -1):
+		return 1000000
+	var stand_tiles: Array[Vector2i] = []
+	for stand_tile in territory_manager.get_miner_attack_tiles(target_tile):
+		if territory_manager.is_standable_tile(stand_tile):
+			stand_tiles.append(stand_tile)
+	if stand_tiles.is_empty():
+		return 1000000
+	var path := territory_manager.find_miner_path(start_tile, stand_tiles)
+	return path.size() if not path.is_empty() else 1000000
+
+func _troop_supports_role_action(troop: Node, action_id: String) -> bool:
+	if not troop.has_method("get_role_actions"):
+		return false
+	for action in troop.get_role_actions():
+		if String(action.get("id", "")) == action_id:
+			return true
+	return false
 
 @rpc("any_peer", "reliable")
 func _request_issue_troop_order(unit_ids: Array, order: int, target_tile: Vector2i) -> void:
@@ -1176,6 +1346,7 @@ func get_test_snapshot() -> Dictionary:
 func open_miner_picker(eligible_miners: Variant = null) -> void:
 	_prune_dead_miner_state()
 	_selected_miner_unit_id = -1
+	_selected_miner_unit_ids.clear()
 	_draft_mining_tiles.clear()
 	_draft_mining_order.clear()
 	_draft_harvest_order.clear()
@@ -1217,10 +1388,14 @@ func _connect_picker_cancel_buttons() -> void:
 func _on_non_mining_button_pressed() -> void:
 	if _mining_selection_state != MiningSelectionState.INACTIVE:
 		cancel_mining_selection()
+	if troop_command_ui != null:
+		troop_command_ui.close_roster()
+		troop_command_ui.close_role_menu()
 
 func select_miner_for_mining(unit_id: int) -> void:
 	var committed_job := _get_miner_job(unit_id)
 	_selected_miner_unit_id = unit_id
+	_selected_miner_unit_ids = [unit_id]
 	_draft_mining_tiles.clear()
 	_draft_mining_order.clear()
 	_draft_harvest_order.clear()
@@ -1246,7 +1421,7 @@ func select_miner_for_mining(unit_id: int) -> void:
 	_refresh_mining_selection_visuals()
 
 func _on_dig_job_requested(auto_harvest_first_ore: bool) -> void:
-	if _selected_miner_unit_id == -1:
+	if _selected_miner_unit_ids.is_empty():
 		return
 	_draft_auto_harvest_first_ore = auto_harvest_first_ore
 	_invalid_draft_mining_tiles = territory_manager.get_invalid_mining_selection_tiles(_draft_mining_tiles)
@@ -1257,7 +1432,7 @@ func _on_dig_job_requested(auto_harvest_first_ore: bool) -> void:
 	_refresh_mining_selection_visuals()
 
 func _on_harvest_job_requested() -> void:
-	if _selected_miner_unit_id == -1:
+	if _selected_miner_unit_ids.is_empty():
 		return
 	_mining_selection_state = MiningSelectionState.SELECTING_HARVEST
 	if mining_menu.has_method("show_confirm_state"):
@@ -1276,6 +1451,7 @@ func cancel_mining_selection() -> void:
 	_stroke_toggled_tiles.clear()
 	_stroke_select_mode = null
 	_selected_miner_unit_id = -1
+	_selected_miner_unit_ids.clear()
 	territory_manager.clear_harvest_queue_overlay()
 	if not _has_any_committed_mining_assignments():
 		_mining_selection_state = MiningSelectionState.INACTIVE
@@ -1286,22 +1462,47 @@ func cancel_mining_selection() -> void:
 	_refresh_mining_selection_visuals()
 
 func confirm_mining_selection() -> void:
-	if _selected_miner_unit_id == -1:
+	var selected_unit_ids := _selected_miner_unit_ids.duplicate()
+	if selected_unit_ids.is_empty() and _selected_miner_unit_id != -1:
+		selected_unit_ids.append(_selected_miner_unit_id)
+	if selected_unit_ids.is_empty():
 		cancel_mining_selection()
 		return
-	var selected_unit_id := _selected_miner_unit_id
-	var committed_job := _make_idle_job(selected_unit_id, _miner_colors.get(selected_unit_id, Color.WHITE))
+	selected_unit_ids.sort()
+	var job_type := MinerJobType.IDLE
+	var work_order: Array[Vector2i] = []
 	if _mining_selection_state == MiningSelectionState.SELECTING_DIG:
 		for raw_tile in _invalid_draft_mining_tiles.keys():
 			var tile: Vector2i = raw_tile
 			_draft_mining_tiles.erase(tile)
 			_draft_mining_order.erase(tile)
-		committed_job = _build_dig_job(selected_unit_id, _draft_mining_order, _draft_auto_harvest_first_ore)
+		job_type = MinerJobType.DIG
+		work_order = _draft_mining_order.duplicate()
 	elif _mining_selection_state == MiningSelectionState.SELECTING_HARVEST:
-		committed_job = _build_harvest_job(selected_unit_id, _draft_harvest_order)
-	DebugConsole.log_msg("MiningJob: confirm miner=%d payload=%s" % [selected_unit_id, str(committed_job)])
+		job_type = MinerJobType.HARVEST
+		work_order = _draft_harvest_order.duplicate()
+	DebugConsole.log_msg("MiningJob: confirm miners=%s type=%d tiles=%s" % [
+		str(selected_unit_ids),
+		job_type,
+		str(work_order),
+	])
+	var assignments: Dictionary = {}
 	if not _has_active_multiplayer_peer() or _is_multiplayer_server():
-		_apply_miner_job(selected_unit_id, committed_job)
+		assignments = _apply_miner_group_job_request(
+			selected_unit_ids,
+			job_type,
+			work_order,
+			_draft_auto_harvest_first_ore,
+			GameState.local_team
+		)
+	else:
+		_request_assign_miner_group_job.rpc_id(
+			1,
+			selected_unit_ids,
+			job_type,
+			work_order,
+			_draft_auto_harvest_first_ore
+		)
 	_draft_mining_tiles.clear()
 	_draft_mining_order.clear()
 	_draft_harvest_order.clear()
@@ -1313,18 +1514,19 @@ func confirm_mining_selection() -> void:
 	_stroke_select_mode = null
 	_mining_selection_state = MiningSelectionState.CONFIRMED
 	territory_manager.clear_harvest_queue_overlay()
-	if not _is_multiplayer_server():
-		_request_assign_miner_job.rpc_id(1, selected_unit_id, committed_job)
 	_selected_miner_unit_id = -1
+	_selected_miner_unit_ids.clear()
 	if mining_menu.has_method("show_pickaxe_state"):
 		mining_menu.show_pickaxe_state()
 	_refresh_mining_selection_visuals()
 	mining_selection_confirmed.emit({
-		"unit_id": selected_unit_id,
-		"job_type": int(committed_job.get("job_type", MinerJobType.IDLE)),
-		"tiles": _typed_tile_array(committed_job.get("dig_tiles", [])),
-		"tile_order": _typed_tile_array(committed_job.get("dig_tiles", [])),
-		"ore_order": _typed_tile_array(committed_job.get("assigned_ore_tiles", [])),
+		"unit_id": selected_unit_ids[0],
+		"unit_ids": selected_unit_ids,
+		"job_type": job_type,
+		"tiles": work_order if job_type == MinerJobType.DIG else [],
+		"tile_order": work_order if job_type == MinerJobType.DIG else [],
+		"ore_order": work_order if job_type == MinerJobType.HARVEST else [],
+		"assignments": assignments,
 	})
 
 func toggle_draft_tile(tile: Vector2i) -> bool:
@@ -1513,17 +1715,44 @@ func _issue_active_move_to_screen_position(screen_position: Vector2) -> bool:
 		DebugConsole.log_msg("TroopCommand: rejected Move target=%s" % str(target_world))
 	return accepted
 
-func _on_role_actions_requested() -> void:
-	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
-		cancel_mining_selection()
+func _on_role_action_requested(action_id: String, unit_ids: Array) -> void:
+	var eligible_unit_ids: Array[int] = []
+	for raw_unit_id in unit_ids:
+		var unit_id := int(raw_unit_id)
+		if not _active_selection_ids.has(unit_id):
+			continue
+		var troop := get_unit_by_id(unit_id)
+		if troop != null and _troop_supports_role_action(troop, action_id):
+			eligible_unit_ids.append(unit_id)
+	eligible_unit_ids.sort()
+	if eligible_unit_ids.is_empty():
 		return
-	var active_miners: Array = []
-	for miner in get_local_miners():
-		if _active_selection_ids.has(int(miner.get("unit_id", -1))):
-			active_miners.append(miner)
-	if active_miners.is_empty():
-		return
-	open_miner_picker(active_miners)
+	match action_id:
+		"miner_dig":
+			_begin_miner_role_targeting(eligible_unit_ids, MiningSelectionState.SELECTING_DIG)
+		"miner_harvest":
+			_begin_miner_role_targeting(eligible_unit_ids, MiningSelectionState.SELECTING_HARVEST)
+
+func _begin_miner_role_targeting(unit_ids: Array[int], selection_state: int) -> void:
+	_draft_mining_tiles.clear()
+	_draft_mining_order.clear()
+	_draft_harvest_order.clear()
+	_draft_harvest_lookup.clear()
+	_invalid_draft_mining_tiles.clear()
+	_draft_auto_harvest_first_ore = false
+	_selection_drag_active = false
+	_stroke_toggled_tiles.clear()
+	_stroke_select_mode = null
+	_selected_miner_unit_ids = unit_ids.duplicate()
+	_selected_miner_unit_id = unit_ids[0]
+	_mining_selection_state = selection_state
+	if mining_menu.has_method("show_confirm_state"):
+		mining_menu.show_confirm_state()
+	if selection_state == MiningSelectionState.SELECTING_HARVEST:
+		territory_manager.set_harvest_queue_overlay(_draft_harvest_order)
+	else:
+		territory_manager.clear_harvest_queue_overlay()
+	_refresh_mining_selection_visuals()
 
 func _handle_mining_selection_input(event: InputEvent) -> void:
 	if _mining_selection_state == MiningSelectionState.PICKING_MINER:
