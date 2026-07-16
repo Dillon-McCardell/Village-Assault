@@ -4,6 +4,15 @@ Custom test sessions launch a deterministic game directly from a JSON map and tr
 description. They use the normal lobby, multiplayer spawner, terrain manager, and game
 scene, so they are suitable for visual QA and multiplayer reproduction cases.
 
+To launch two independent game windows at the main menu, run:
+
+```sh
+./tools/run_local_multiplayer.sh
+```
+
+Use the normal Host and Join flow to exercise the menus, lobby, and gameplay. Both
+windows remain open until they are closed or the launcher is stopped with `Ctrl-C`.
+
 From the repository root, launch one local player:
 
 ```sh

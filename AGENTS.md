@@ -1,52 +1,152 @@
 # Codex Notes
 
+## Project Orientation
+
+- The repository root contains tooling and Git hooks. The Godot project root is
+  `village-assault/`; `res://` paths and direct GdUnit commands resolve from there.
+- Run repository launchers such as `tools/run_all_tests.sh`,
+  `tools/run_test_session.py`, and `tools/run_local_multiplayer.sh` from the repository
+  root.
+- Before editing, inspect `git status`. This checkout is often used for iterative
+  gameplay validation, so preserve unrelated worktree changes and build on relevant
+  changes rather than reverting them.
+
 ## Godot CLI
 
-- Preferred Godot binary for this repo: `/Users/dmccard/Downloads/Godot.app/Contents/MacOS/Godot`
-- Verified on 2026-03-29 with `--version`: `4.5.1.stable.official.f62fdbde1`
-- When running GdUnit from the repo, prefer either:
-  - `export GODOT_BIN=/Users/dmccard/Downloads/Godot.app/Contents/MacOS/Godot`
-  - `./addons/gdUnit4/runtest.sh --godot_binary /Users/dmccard/Downloads/Godot.app/Contents/MacOS/Godot --add res://tests/...`
+- Preferred Godot binary:
+  `/Applications/Godot.app/Contents/MacOS/Godot`
+- Verified on 2026-07-16 with `--version`:
+  `4.5.1.stable.official.f62fdbde1`
+- Set the binary explicitly before using repository tools:
 
-## Repository Layout
+  ```sh
+  export GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot
+  ```
 
-- Godot project root: `/Users/dmccard/Repos/Village-Assault/village-assault`
-- Repo root is not the Godot project root. Commands like GdUnit test runs should usually execute from the `village-assault/` subdirectory.
+- Run a focused GdUnit suite from `village-assault/`:
 
-## Multiplayer and Runtime Gotchas
+  ```sh
+  ./addons/gdUnit4/runtest.sh \
+    --godot_binary "$GODOT_BIN" \
+    --add res://tests/test_unit_spawning.gd
+  ```
 
-- For multiplayer-spawned troops, prefer scene-owned visual nodes over dynamically created runtime children when possible. Existing scene children replicate more predictably across host/client because both peers instantiate the same node tree before replicated state starts updating.
-- Do not assume replicated exported-property updates will always behave like ordinary local setter calls in gameplay code. For client-visible visuals derived from replicated values, it is safer to include a lightweight runtime refresh path that re-syncs presentation from current state.
-- `GameState.local_state_updated` is not just a "team assigned" signal. It also fires on local money/state refreshes, so game-camera anchoring or other one-time view setup should be gated to initial team assignment or actual team changes instead of every emission.
-- Any code path that may run in offline tests should guard `multiplayer.is_server()`, `multiplayer.get_unique_id()`, and `multiplayer.get_peers()` behind `multiplayer.multiplayer_peer != null`. Otherwise Godot emits noisy peer warnings and some scene tests become brittle.
+- Do not run Godot-based tests in parallel. GdUnit scenes and multiplayer harnesses can
+  contend for local ENet ports and produce misleading failures.
 
-## UI and Input Gotchas
+## Runtime and Multiplayer
 
-- The `CanvasLayer/UI` node in `res://scenes/game.tscn` is a full-screen `Control`. Mouse interactions that should work during gameplay often need to be handled in `_input()` rather than `_unhandled_input()`, because UI controls can consume events before `_unhandled_input()` sees them.
-- If world clicks should coexist with UI, keep explicit "pointer over blocking UI" checks in game-scene input code instead of relying on `_unhandled_input()` alone.
-- For bottom-corner HUD controls in the game scene, prefer the same layout strategy used by `shop_menu.gd`: compute positions from `ProjectSettings` viewport width/height. Using control-local viewport sizing can make buttons appear off-screen or not appear at all.
-- When changing camera drag behavior, update both runtime input code and any tests that simulate drags. Tests need explicit mouse-button release events or the camera can remain in a drag state across later assertions.
+- The server is authoritative for terrain mutations, tactical orders, worker jobs,
+  combat, and resource rewards. Clients should present replicated state rather than
+  independently deciding gameplay transitions.
+- For multiplayer-spawned troops, prefer scene-owned visual nodes over dynamically
+  created runtime children. Both peers then instantiate the same node tree before
+  replicated state begins updating.
+- Replicated exported-property updates do not always behave like ordinary local setter
+  calls. Client-visible presentation derived from replicated values should have a
+  lightweight refresh path that reconciles visuals with current state.
+- `GameState.local_state_updated` also fires for money and state refreshes. Gate camera
+  anchoring and similar one-time setup on initial team assignment or an actual team
+  change.
+- Code that can run in offline tests must check
+  `multiplayer.multiplayer_peer != null` before calling `multiplayer.is_server()`,
+  `multiplayer.get_unique_id()`, or `multiplayer.get_peers()`.
 
-## World and Terrain Conventions
+## UI and Input
 
-- `TerritoryManager` is the authoritative home for tile-grid queries and tile-state mutations. New gameplay that depends on terrain, visibility, ore, pathability, or tile destruction should prefer adding narrow helper APIs there instead of duplicating tile logic in troop scripts or UI code.
-- Keep terrain excavation state separate from resource-harvesting state. Normal terrain health, underground-air replacement, ore health, ore reveal state, and overlay rendering are easier to reason about and test when they are modeled as distinct systems instead of one overloaded "tile damage" path.
-- Grounded troop movement should operate in tile-space first and derive world positions from standable tiles. Free world-space interpolation is easy to add but often causes floating, invalid climbs, and host/client divergence once terrain changes at runtime.
-- When adding new TileMap layers for gameplay rendering, explicitly set both the TileMap `z_index` and each layer z-index/modulate in code. Default layer ordering is easy to break when adding overlays or underground visuals and can cause terrain to render over troops.
+- `CanvasLayer/UI` in `res://scenes/game.tscn` is a full-screen `Control`. Gameplay mouse
+  input belongs in `_input()` when it must run before controls consume the event.
+- World clicks that coexist with UI need explicit pointer-over-blocking-UI checks. Do
+  not rely on `_unhandled_input()` alone.
+- Bottom-corner HUD controls should follow `shop_menu.gd` and derive placement from the
+  configured viewport dimensions. Control-local viewport sizing can place controls
+  off-screen.
+- Camera-drag tests must send explicit mouse-button release events so drag state cannot
+  leak into later assertions.
 
-## Job and State Modeling
+## Movement and Footprints
 
-- For long-running worker behavior, prefer explicit job/state payloads over inferring behavior from a single tile list. Separate "assigned job" from "runtime state" so UI, replication, and AI transitions stay understandable.
-- If a worker action can branch at runtime, such as digging that may convert into harvesting, encode the branch as an explicit state transition on the authority rather than implicit client-side heuristics.
-- When a unit has both committed orders and transient path progress, clear and rebuild path progress whenever the committed order changes. Reusing stale path state after reassignment causes subtle bugs that are hard to notice until multiplayer testing.
-- Prefer deterministic tie-breakers for gameplay decisions that can happen on different peers, such as selecting among multiple reachable targets. Shortest path, then stable coordinate ordering, is a good default.
+- Grounded movement is tile-based. `TerritoryManager` owns standability, footprint,
+  climb/drop, pathfinding, and tile/world conversion rules; troop scripts should call
+  its narrow APIs rather than duplicate terrain logic.
+- A stand tile is the bottom air tile occupied by a troop, not its support block.
+  Convert it with `troop_stand_tile_to_world_position()` and pass the troop width so
+  wide units remain centered correctly.
+- `TestUnit.set_body_polygon()` derives occupancy width and height by rounding the body
+  polygon's bounds up to whole terrain tiles. Changing a troop polygon is therefore a
+  gameplay/pathfinding change, not just a visual change.
+- Keep every troop's scene-owned `Body` polygon synchronized with the runtime fallback
+  polygon in its script. Test both dimensions whenever either definition changes.
+- Miners intentionally occupy exactly one 16 x 16 tile. Miner job navigation currently
+  uses the one-tile `is_standable_tile()` and `find_miner_path()` contract, while
+  tactical Move uses footprint-aware troop pathing. If miners become taller than one
+  tile, migrate job navigation to footprint-aware APIs in the same change or Dig and
+  Move will disagree about tunnel clearance.
+- Tactical Move should compute one path with
+  `find_troop_path_to_nearest_reachable()` and retain it while the order is active.
+  Avoid reachability searches during command validation or every physics frame. Use an
+  indexed queue for breadth-first search rather than `Array.pop_front()`.
+- Clear committed and transient path state whenever an order or miner job changes.
+  Rebuild only when a new order begins or a terrain mutation invalidates the next path
+  tile.
+- Paths across climbs and drops must contain each intermediate stand tile. Advance path
+  progress after reaching that tile's exact world position; deriving progress only from
+  the current grid tile can cause freezing and visual vibration near transitions.
+- Retreat ignores enemy acquisition and routes to
+  `TerritoryManager.get_base_troop_stand_tile()` for the troop's actual footprint. Do
+  not use the camera-oriented base anchor directly as a movement destination.
 
-## Testing Notes
+## Terrain, Fog, and Worker Jobs
 
-- This repo enforces tests at commit time through `.githooks/pre-commit`, and `core.hooksPath` already points at `.githooks` in this checkout. If a commit fails unexpectedly, check both the pre-commit test run and the `commit-msg` hook.
-- Do not run Godot-based test commands in parallel. GdUnit scene tests and reconnect harness runs can contend for local ENet ports and produce misleading failures.
-- Prefer `./tools/run_all_tests.sh` for final verification. It runs the full GdUnit suite plus both reconnect harness scenarios in the correct sequence.
-- For map-dependent visual or multiplayer QA, use `./tools/run_test_session.py <scenario.json>`. Pass `--players 2` for host/client windows or `--headless --exit-after-ready` for a setup smoke test. Reusable scenarios and the JSON schema live in `village-assault/test_sessions/`.
-- Scene tests for real mouse behavior should call the same input path the live game uses. If gameplay input is handled in `_input()`, tests should drive `_input()` too; directly calling `_unhandled_input()` can hide routing bugs.
-- The in-game debug console is useful for temporary instrumentation while debugging input and coordinate conversion issues. Logging blocked-by-UI events, screen/world/tile conversions, and selection state transitions is high-signal in this project.
-- When adding new gameplay rules to terrain or worker AI, add at least one direct `TerritoryManager`-level test and one scene/runtime test. The direct test should lock down grid/pathing rules; the scene test should verify the rule still holds once UI, spawning, and multiplayer-facing initialization are involved.
+- Keep excavation state separate from harvesting state: terrain health, underground
+  air, ore health, ore reveal state, and overlays have distinct lifecycles.
+- Add TileMap gameplay layers with explicit TileMap and layer z-index/modulate settings.
+  Defaults can place terrain over troops or selection overlays.
+- Fog transition work runs at a bounded interval and updates the existing mask texture
+  in place. Avoid rebuilding the complete fog image/texture every rendered frame;
+  troop movement can otherwise cause severe frame-rate drops.
+- Model long-running worker behavior with separate assigned-job and runtime-state
+  payloads. Runtime branches such as Dig becoming Harvest must be explicit
+  authority-side state transitions.
+- Gameplay choices that may be evaluated on multiple peers need deterministic
+  tie-breakers. Prefer shortest path, then stable tile-coordinate ordering.
+
+## Testing and Visual QA
+
+- Git hooks are enabled through `core.hooksPath=.githooks`. A failed commit can come
+  from either the pre-commit test run or the commit-message hook.
+- Final verification from the repository root is:
+
+  ```sh
+  GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot \
+    ./tools/run_all_tests.sh
+  ```
+
+  This runs the complete GdUnit suite, game and lobby reconnect harnesses, and the
+  two-peer grouped-mining acceptance scenario in sequence.
+- Use `./tools/run_test_session.py <scenario.json>` for deterministic map-dependent
+  visual or multiplayer QA. Pass `--players 2` for host/client windows or
+  `--headless --exit-after-ready` for setup smoke tests. Scenario documentation lives
+  in `village-assault/test_sessions/README.md`.
+- Use `./tools/run_local_multiplayer.sh` when manual validation should start two
+  independent windows at the main menu and exercise the complete Host/Join flow.
+- Scene tests for mouse behavior must call the same path as the live game. If runtime
+  handling is in `_input()`, driving `_unhandled_input()` in a test can hide routing
+  bugs.
+- New terrain or movement rules need a direct `TerritoryManager` test plus a scene or
+  runtime test. The direct test locks down grid semantics; the scene test verifies body
+  footprints, spawning, input, and multiplayer-facing initialization together.
+- For clearance regressions, build an enclosed tunnel with explicit air, support, and
+  ceiling tiles. Assert both the computed occupancy size and the final tactical order
+  position.
+- The in-game debug console is useful for temporary instrumentation. Log order
+  acceptance, blocked-by-UI events, screen/world/tile conversions, path goals, and
+  selection changes while reproducing input or movement failures.
+
+## Godot File Hygiene
+
+- Opening the editor can rewrite `project.godot`. Keep such changes only when they are
+  required by the feature; discard incidental editor churn after reviewing the diff.
+- Godot `.uid` files preserve script/resource identity. Commit newly generated UID
+  files that correspond to tracked resources, even when the editor produced them
+  separately from the gameplay change.
