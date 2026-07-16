@@ -262,6 +262,47 @@ func test_grunt_fits_one_tile_tunnel_but_ranger_does_not_move_into_it() -> void:
 	_clear_node(game)
 	_reset_runtime_state()
 
+func test_miner_tactical_move_crosses_one_tile_tunnel() -> void:
+	var game := _start_host_game()
+	GameState.enqueue_spawn({
+		"peer_id": 1,
+		"item_id": "troop_miner",
+		"team": GameState.get_team_for_peer(1),
+	})
+	game._process_spawn_queue()
+	var miner: Node2D = game.get_unit_by_id(1)
+	assert_that(miner).is_not_null()
+
+	var tunnel_tiles: Array[Vector2i] = [
+		Vector2i(6, 8), Vector2i(7, 8), Vector2i(8, 8), Vector2i(9, 8),
+	]
+	_carve_tunnel_section(
+		game,
+		tunnel_tiles,
+		[Vector2i(6, 9), Vector2i(7, 9), Vector2i(8, 9), Vector2i(9, 9)],
+		[Vector2i(6, 7), Vector2i(7, 7), Vector2i(8, 7), Vector2i(9, 7)]
+	)
+	var start_tile := tunnel_tiles[0]
+	var destination_tile := tunnel_tiles[tunnel_tiles.size() - 1]
+	miner.position = game.territory_manager.troop_stand_tile_to_world_position(start_tile, 1)
+	miner.issue_tactical_order(TacticalOrder.MOVE, destination_tile)
+
+	for _i in range(40):
+		miner._physics_process(0.1)
+		if miner.current_order == TacticalOrder.DEFEND:
+			break
+
+	var expected_position: Vector2 = game.territory_manager.troop_stand_tile_to_world_position(
+		destination_tile,
+		1
+	)
+	assert_int(int(miner.get("_troop_occupancy_height_tiles"))).is_equal(1)
+	assert_int(miner.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_vector(miner.position).is_equal_approx(expected_position, Vector2(0.01, 0.01))
+
+	_clear_node(game)
+	_reset_runtime_state()
+
 func test_grunt_can_walk_off_one_tile_drop() -> void:
 	var game := _start_host_game()
 	GameState.enqueue_spawn({
@@ -354,6 +395,50 @@ func test_grunt_can_climb_one_tile_step() -> void:
 
 	assert_vector(climb_target).is_equal(Vector2i(7, 7))
 	assert_vector(grunt._troop_movement_target_tile).is_equal(Vector2i(7, 7))
+
+	_clear_node(game)
+	_reset_runtime_state()
+
+func test_move_order_crosses_climb_and_drop_before_reaching_destination() -> void:
+	var game := _start_host_game()
+	GameState.enqueue_spawn({
+		"peer_id": 1,
+		"item_id": "troop_grunt",
+		"team": GameState.get_team_for_peer(1),
+	})
+	game._process_spawn_queue()
+	var grunt: Node2D = game.get_unit_by_id(1)
+	assert_that(grunt).is_not_null()
+
+	_carve_tunnel_section(
+		game,
+		[
+			Vector2i(6, 8), Vector2i(7, 7), Vector2i(8, 7),
+			Vector2i(9, 8), Vector2i(10, 8),
+		],
+		[
+			Vector2i(6, 9), Vector2i(7, 8), Vector2i(8, 8),
+			Vector2i(9, 9), Vector2i(10, 9),
+		]
+	)
+	var start_tile := Vector2i(6, 8)
+	var destination_tile := Vector2i(10, 8)
+	grunt.position = game.territory_manager.troop_stand_tile_to_world_position(start_tile, 1)
+	grunt._snap_to_ground()
+	grunt.issue_tactical_order(TacticalOrder.MOVE, destination_tile)
+
+	for _i in range(80):
+		grunt._physics_process(0.1)
+		if grunt.current_order == TacticalOrder.DEFEND:
+			break
+
+	var expected_position: Vector2 = game.territory_manager.troop_stand_tile_to_world_position(
+		destination_tile,
+		1
+	)
+	assert_int(grunt.current_order).is_equal(TacticalOrder.DEFEND)
+	assert_vector(grunt.defense_anchor_tile).is_equal(destination_tile)
+	assert_vector(grunt.position).is_equal_approx(expected_position, Vector2(0.01, 0.01))
 
 	_clear_node(game)
 	_reset_runtime_state()

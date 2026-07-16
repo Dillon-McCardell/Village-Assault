@@ -142,6 +142,23 @@ func test_base_anchors_stay_in_their_territories_after_world_size_changes() -> v
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
 
+func test_base_troop_stand_tiles_are_valid_for_all_troop_sizes() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 20, 7788)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+
+	for team in [GameState.Team.LEFT, GameState.Team.RIGHT]:
+		for size in [Vector2i(1, 1), Vector2i(1, 2), Vector2i(2, 2)]:
+			var stand_tile := manager.get_base_troop_stand_tile(team, size.x, size.y)
+			assert_vector(stand_tile).is_not_equal(Vector2i(-1, -1))
+			assert_bool(manager.is_troop_standable_tile(stand_tile, size.x, size.y)).is_true()
+			var stand_world := manager.troop_stand_tile_to_world_position(stand_tile, size.x)
+			assert_bool(manager.is_world_pos_in_team_territory(stand_world, team)).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
 func test_world_pixel_rect_matches_world_settings_and_tile_size() -> void:
 	_terrain_harness.reset_runtime_state()
 	GameState.set_world_settings(72, 24, 8888)
@@ -456,6 +473,30 @@ func test_troop_walk_target_allows_size_based_forward_drops() -> void:
 
 	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 1, 2)).is_equal(Vector2i(7, 10))
 	assert_vector(manager.get_troop_walk_target(Vector2i(6, 8), 1, 2, 2)).is_equal(Vector2i(7, 10))
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_troop_path_returns_nearest_reachable_fallback_in_one_search() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(16, 12, 10020)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var support_tiles: Array[Vector2i] = []
+	for tile_x in range(2, 9):
+		support_tiles.append(Vector2i(tile_x, 8))
+	_clear_and_fill_ground(manager, support_tiles)
+
+	var path := manager.find_troop_path_to_nearest_reachable(
+		Vector2i(2, 7),
+		Vector2i(10, 7),
+		1,
+		1
+	)
+
+	assert_int(path.size()).is_equal(7)
+	assert_vector(path[0]).is_equal(Vector2i(2, 7))
+	assert_vector(path[path.size() - 1]).is_equal(Vector2i(8, 7))
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()

@@ -127,6 +127,42 @@ func test_type_filter_preserves_cohort_and_commands_only_active_subset() -> void
 	_clear_node(game)
 	_reset_runtime_state()
 
+func test_retreat_command_disengages_and_moves_selected_troop_toward_base() -> void:
+	var game := _start_host_game()
+	var territory := game.get_node("TerritoryManager") as TerritoryManager
+	var base_anchor := territory.get_base_anchor_world(GameState.Team.LEFT)
+	var base_tile := Vector2i(
+		territory.world_to_tile(base_anchor).x,
+		territory.get_surface_tile_y_at_x(base_anchor.x) - 1
+	)
+	assert_bool(territory.is_troop_standable_tile(base_tile, 1, 1)).is_true()
+	var start_tile := territory.get_troop_walk_target(base_tile, 1, 1, 1)
+	assert_vector(start_tile).is_not_equal(Vector2i(-1, -1))
+	var troop := _spawn_troop(game, "troop_grunt", 1, start_tile.x)
+	troop.position = territory.troop_stand_tile_to_world_position(start_tile, 1)
+	var enemy_position := troop.position + Vector2(8.0, 0.0)
+	game.spawn_unit(
+		enemy_position,
+		GameState.Team.RIGHT,
+		"troop_grunt",
+		2,
+		game.get_troop_spawn_payload("troop_grunt")
+	)
+	var enemy: Node2D = game.get_unit_by_id(2)
+	enemy.position = enemy_position
+	game.select_troops_by_ids([1])
+	var start_position := troop.position
+
+	game.troop_command_ui.order_requested.emit(TacticalOrder.RETREAT)
+	troop._physics_process(0.1)
+
+	assert_int(troop.current_order).is_equal(TacticalOrder.RETREAT)
+	assert_int(troop.current_status).is_equal(TroopStatus.RETREATING)
+	assert_float(troop.position.x).is_less(start_position.x)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
 func test_restore_all_reactivates_every_troop_in_the_cohort() -> void:
 	var game := _start_host_game()
 	_spawn_troop(game, "troop_grunt", 1, 12)

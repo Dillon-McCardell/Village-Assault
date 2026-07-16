@@ -377,7 +377,11 @@ func test_move_command_reaches_destination_then_defends() -> void:
 	GameState.local_team = GameState.Team.LEFT
 	var troop := _spawn_troop(game, "troop_grunt", 1, GameState.Team.LEFT, 12)
 	var territory := game.get_node("TerritoryManager") as TerritoryManager
-	var target_tile := Vector2i(14, territory.get_surface_tile_y_at_x(14.0 * territory.tile_size) - 1)
+	var start_tile := territory.get_troop_standable_tile_for_world_position(troop.position, 1, 1)
+	var target_tile := territory.get_troop_walk_target(start_tile, 1, 1, 1)
+	if target_tile == Vector2i(-1, -1):
+		target_tile = territory.get_troop_walk_target(start_tile, -1, 1, 1)
+	assert_vector(target_tile).is_not_equal(Vector2i(-1, -1))
 	var target_world := territory.troop_stand_tile_to_world_position(target_tile, 1)
 
 	var accepted: bool = game.issue_troop_order_for_units([1], TacticalOrder.MOVE, target_world)
@@ -391,6 +395,7 @@ func test_move_command_reaches_destination_then_defends() -> void:
 
 	assert_int(troop.current_order).is_equal(TacticalOrder.DEFEND)
 	assert_vector(troop.defense_anchor_tile).is_equal(target_tile)
+	assert_vector(troop.position).is_equal_approx(target_world, Vector2(0.01, 0.01))
 
 	_clear_node(game)
 	_reset_runtime_state()

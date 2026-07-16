@@ -170,6 +170,8 @@ func sync_current_health(value: int) -> void:
 	current_health = value
 
 func _get_enemy_target() -> Node2D:
+	if current_order == TacticalOrder.RETREAT:
+		return null
 	for node in get_tree().get_nodes_in_group("troops"):
 		if node == self:
 			continue
@@ -511,38 +513,33 @@ func _process_move_order(delta: float) -> void:
 	if _territory_manager == null or command_target_tile == TROOP_INVALID_TILE:
 		issue_tactical_order(TacticalOrder.DEFEND)
 		return
-	var current_tile := _get_current_troop_stand_tile()
-	if current_tile == TROOP_INVALID_TILE:
-		return
-	var fallback_tile := _territory_manager.find_nearest_reachable_troop_tile(
-		current_tile,
-		command_target_tile,
-		_troop_occupancy_width_tiles,
-		_troop_occupancy_height_tiles
-	)
-	if fallback_tile == TROOP_INVALID_TILE:
-		issue_tactical_order(TacticalOrder.DEFEND)
-		return
-	if _troop_path_tiles.is_empty() or _troop_path_goal_tile != fallback_tile:
-		_troop_path_tiles = _territory_manager.find_troop_path(
+	if _troop_path_goal_tile == TROOP_INVALID_TILE:
+		var current_tile := _get_current_troop_stand_tile()
+		if current_tile == TROOP_INVALID_TILE:
+			return
+		_troop_path_tiles = _territory_manager.find_troop_path_to_nearest_reachable(
 			current_tile,
-			[fallback_tile],
+			command_target_tile,
 			_troop_occupancy_width_tiles,
 			_troop_occupancy_height_tiles
 		)
+		if _troop_path_tiles.is_empty():
+			issue_tactical_order(TacticalOrder.DEFEND)
+			return
 		_troop_path_index = 0
-		_troop_path_goal_tile = fallback_tile
+		_troop_path_goal_tile = _troop_path_tiles[_troop_path_tiles.size() - 1]
 	if _follow_troop_path(delta):
 		return
-	defense_anchor_tile = fallback_tile
-	issue_tactical_order(TacticalOrder.DEFEND, fallback_tile)
+	var completed_tile := _troop_path_goal_tile
+	defense_anchor_tile = completed_tile
+	issue_tactical_order(TacticalOrder.DEFEND, completed_tile)
 
 func _process_retreat_order(delta: float) -> void:
 	if _territory_manager == null:
 		issue_tactical_order(TacticalOrder.DEFEND)
 		return
-	var base_tile := _territory_manager.get_troop_standable_tile_for_world_position(
-		_territory_manager.get_base_anchor_world(team),
+	var base_tile := _territory_manager.get_base_troop_stand_tile(
+		team,
 		_troop_occupancy_width_tiles,
 		_troop_occupancy_height_tiles
 	)
@@ -575,8 +572,21 @@ func _follow_troop_path(delta: float) -> bool:
 		return false
 	while _troop_path_index < _troop_path_tiles.size():
 		var target_tile: Vector2i = _troop_path_tiles[_troop_path_index]
-		var current_tile := _get_current_troop_stand_tile()
-		if current_tile == target_tile:
+		if not _territory_manager.is_troop_standable_tile(
+			target_tile,
+			_troop_occupancy_width_tiles,
+			_troop_occupancy_height_tiles
+		):
+			_troop_movement_target_tile = TROOP_INVALID_TILE
+			_clear_troop_path()
+			return true
+		var target_world := _territory_manager.troop_stand_tile_to_world_position(
+			target_tile,
+			_troop_occupancy_width_tiles
+		)
+		if position.distance_to(target_world) <= 0.01:
+			position = target_world
+			_troop_movement_target_tile = TROOP_INVALID_TILE
 			_troop_path_index += 1
 			continue
 		_follow_troop_ground_target(target_tile, delta)

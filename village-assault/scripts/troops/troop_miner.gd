@@ -625,16 +625,16 @@ func _update_miner_visuals() -> void:
 
 func _body_polygon() -> PackedVector2Array:
 	return PackedVector2Array([
-		Vector2(-8, -10),
-		Vector2(8, -10),
-		Vector2(8, 10),
-		Vector2(-8, 10),
+		Vector2(-8, -8),
+		Vector2(8, -8),
+		Vector2(8, 8),
+		Vector2(-8, 8),
 	])
 
 func _top_polygon() -> PackedVector2Array:
 	return PackedVector2Array([
-		Vector2(-8, -10),
-		Vector2(8, -10),
+		Vector2(-8, -8),
+		Vector2(8, -8),
 		Vector2(8, 0),
 		Vector2(-8, 0),
 	])

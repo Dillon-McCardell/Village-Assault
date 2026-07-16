@@ -968,14 +968,6 @@ func _validate_move_target_for_units(unit_ids: Array[int], target_tile: Vector2i
 		)
 		if start_tile == Vector2i(-1, -1):
 			return false
-		var fallback := territory_manager.find_nearest_reachable_troop_tile(
-			start_tile,
-			target_tile,
-			width_tiles,
-			height_tiles
-		)
-		if fallback == Vector2i(-1, -1):
-			return false
 	return true
 
 func _is_move_target_visible_or_explored(target_tile: Vector2i, requester_team: int) -> bool:

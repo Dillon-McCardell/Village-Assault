@@ -56,10 +56,12 @@ var _fog_local_team: int = GameState.Team.NONE
 var _fog_current_target_image: Image = null
 var _fog_current_display_image: Image = null
 var _fog_current_source_signature: String = ""
+var _fog_transition_accumulator: float = 0.0
 
 const MAX_MINER_OVERLAY_LAYERS: int = 6
 const FOG_REVEAL_RADIUS_TILES: int = 3
 const FOG_MASK_PIXELS_PER_TILE: int = 4
+const FOG_TRANSITION_UPDATE_INTERVAL_SEC: float = 0.05
 const TILE_HEALTH_DEFAULT: int = 2
 const TERRAIN_LAYER: int = 0
 const RESOURCE_LAYER: int = 1
@@ -96,7 +98,12 @@ func _ready() -> void:
 	_build_terrain()
 
 func _process(delta: float) -> void:
-	_update_fog_vision_transition(delta)
+	_fog_transition_accumulator += delta
+	if _fog_transition_accumulator < FOG_TRANSITION_UPDATE_INTERVAL_SEC:
+		return
+	var transition_delta := _fog_transition_accumulator
+	_fog_transition_accumulator = 0.0
+	_update_fog_vision_transition(transition_delta)
 
 func _draw() -> void:
 	if not _harvest_queue_overlay_visible:
@@ -769,10 +776,12 @@ func find_troop_path(
 	if goal_lookup.has(start_tile):
 		return [start_tile]
 	var frontier: Array[Vector2i] = [start_tile]
+	var frontier_index := 0
 	var visited: Dictionary = {start_tile: true}
 	var previous: Dictionary = {}
-	while not frontier.is_empty():
-		var current: Vector2i = frontier.pop_front()
+	while frontier_index < frontier.size():
+		var current: Vector2i = frontier[frontier_index]
+		frontier_index += 1
 		for neighbor in get_troop_walk_neighbors(current, width_tiles, height_tiles):
 			if visited.has(neighbor):
 				continue
@@ -782,6 +791,38 @@ func find_troop_path(
 				return _reconstruct_path(previous, start_tile, neighbor)
 			frontier.append(neighbor)
 	return []
+
+func find_troop_path_to_nearest_reachable(
+	start_tile: Vector2i,
+	preferred_goal: Vector2i,
+	width_tiles: int,
+	height_tiles: int
+) -> Array[Vector2i]:
+	if not is_troop_standable_tile(start_tile, width_tiles, height_tiles):
+		return []
+	var frontier: Array[Vector2i] = [start_tile]
+	var frontier_index := 0
+	var visited: Dictionary = {start_tile: true}
+	var previous: Dictionary = {}
+	var best_tile := start_tile
+	var best_distance := _deterministic_tile_distance(start_tile, preferred_goal)
+	while frontier_index < frontier.size():
+		var current: Vector2i = frontier[frontier_index]
+		frontier_index += 1
+		if current == preferred_goal:
+			return _reconstruct_path(previous, start_tile, current)
+		var distance := _deterministic_tile_distance(current, preferred_goal)
+		if distance < best_distance or (
+				distance == best_distance and _is_tile_before(current, best_tile)):
+			best_tile = current
+			best_distance = distance
+		for neighbor in get_troop_walk_neighbors(current, width_tiles, height_tiles):
+			if visited.has(neighbor):
+				continue
+			visited[neighbor] = true
+			previous[neighbor] = current
+			frontier.append(neighbor)
+	return _reconstruct_path(previous, start_tile, best_tile)
 
 func get_troop_walk_neighbors(tile: Vector2i, width_tiles: int, height_tiles: int) -> Array[Vector2i]:
 	var neighbors: Array[Vector2i] = []
@@ -797,29 +838,13 @@ func find_nearest_reachable_troop_tile(
 	width_tiles: int,
 	height_tiles: int
 ) -> Vector2i:
-	if not is_troop_standable_tile(start_tile, width_tiles, height_tiles):
-		return Vector2i(-1, -1)
-	if is_troop_standable_tile(preferred_goal, width_tiles, height_tiles):
-		var exact_path := find_troop_path(start_tile, [preferred_goal], width_tiles, height_tiles)
-		if not exact_path.is_empty():
-			return preferred_goal
-	var frontier: Array[Vector2i] = [start_tile]
-	var visited: Dictionary = {start_tile: true}
-	var best_tile := start_tile
-	var best_distance := _deterministic_tile_distance(start_tile, preferred_goal)
-	while not frontier.is_empty():
-		var current: Vector2i = frontier.pop_front()
-		var distance := _deterministic_tile_distance(current, preferred_goal)
-		if distance < best_distance or (
-				distance == best_distance and _is_tile_before(current, best_tile)):
-			best_tile = current
-			best_distance = distance
-		for neighbor in get_troop_walk_neighbors(current, width_tiles, height_tiles):
-			if visited.has(neighbor):
-				continue
-			visited[neighbor] = true
-			frontier.append(neighbor)
-	return best_tile
+	var path := find_troop_path_to_nearest_reachable(
+		start_tile,
+		preferred_goal,
+		width_tiles,
+		height_tiles
+	)
+	return path[path.size() - 1] if not path.is_empty() else Vector2i(-1, -1)
 
 func apply_tile_damage(tile_pos: Vector2i, amount: int) -> bool:
 	if amount <= 0:
@@ -961,6 +986,16 @@ func get_base_anchor_world(team: int) -> Vector2:
 	var surface_y: int = _get_surface_height(center_x)
 	var camera_tile := Vector2i(center_x, clamp(surface_y - 2, 0, grid_height - 1))
 	return tile_to_world_center(camera_tile)
+
+func get_base_troop_stand_tile(team: int, width_tiles: int, height_tiles: int) -> Vector2i:
+	var base_anchor := get_base_anchor_world(team)
+	var surface_y := get_surface_tile_y_at_x(base_anchor.x)
+	var surface_world := Vector2(base_anchor.x, float(surface_y * tile_size))
+	return get_troop_standable_tile_for_world_position(
+		surface_world,
+		width_tiles,
+		height_tiles
+	)
 
 func get_world_pixel_rect() -> Rect2:
 	var width: float = grid_width * tile_size
@@ -1467,6 +1502,10 @@ func _update_fog_vision_transition(delta: float) -> void:
 			or _fog_current_target_image == null \
 			or _fog_current_display_image == null:
 		return
+	if _fog_mask_image == null \
+			or _fog_mask_image.get_size() != _fog_current_display_image.get_size():
+		_rebuild_fog_mask()
+	var exploration := _get_or_create_fog_exploration_image(_fog_local_team)
 	var changed := false
 	for pixel_x in range(_fog_current_display_image.get_width()):
 		for pixel_y in range(_fog_current_display_image.get_height()):
@@ -1479,9 +1518,18 @@ func _update_fog_vision_transition(delta: float) -> void:
 				else fog_vision_recede_duration_sec
 			var next_value := move_toward(current, target, delta / maxf(0.01, duration))
 			_fog_current_display_image.set_pixelv(pixel, Color(next_value, 0, 0, 1))
+			var alpha := 0.0
+			var tile_pos := world_to_tile(_fog_mask_pixel_to_world(pixel))
+			if _is_underground_fog_candidate(tile_pos):
+				alpha = _compose_fog_alpha(exploration.get_pixelv(pixel).r, next_value)
+			_fog_mask_image.set_pixelv(pixel, Color(0, 0, 0, alpha))
 			changed = true
 	if changed:
-		_rebuild_fog_mask()
+		if _fog_mask_texture == null:
+			_fog_mask_texture = ImageTexture.create_from_image(_fog_mask_image)
+		else:
+			_fog_mask_texture.update(_fog_mask_image)
+		_update_fog_overlay_visibility()
 
 func _compose_fog_alpha(explored: float, current: float) -> float:
 	var inactive_alpha := lerpf(1.0, fog_explored_opacity, clampf(explored, 0.0, 1.0))
