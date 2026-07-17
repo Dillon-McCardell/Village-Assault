@@ -20,6 +20,8 @@ signal fog_revealed_for_team(team: int, tiles: Array, circles: Array)
 @export var max_step: int = 2
 @export var smooth_passes: int = 2
 @export var terrain_seed: int = 0
+@export_range(0.0, 1.0, 0.05) var cave_density: float = 0.6
+@export_range(0.0, 1.0, 0.05) var overhang_density: float = 0.55
 @export var gold_min_depth_below_surface: int = 3
 @export var gold_window_size: int = 10
 @export var gold_max_per_window: int = 2
@@ -31,6 +33,7 @@ signal fog_revealed_for_team(team: int, tiles: Array, circles: Array)
 @onready var tile_map: TileMap = $WorldTileMap
 
 const FOG_OVERLAY_SCRIPT: GDScript = preload("res://scripts/world/fog_of_war_overlay.gd")
+const TERRAIN_TILESET_TEXTURE: Texture2D = preload("res://assets/terrain/terrain_tiles.png")
 
 var _spawn_offsets: Dictionary = {
 	GameState.Team.LEFT: 0,
@@ -39,6 +42,10 @@ var _spawn_offsets: Dictionary = {
 
 var _heightmap: Array[int] = []
 var _gold_tiles: Dictionary = {}
+var _natural_air_tiles: Dictionary = {}
+var _overhang_tiles: Dictionary = {}
+var _natural_background_tiles: Dictionary = {}
+var _overhang_background_tiles: Dictionary = {}
 var _tile_health: Dictionary = {}
 var _ore_health: Dictionary = {}
 var _depleted_ore_tiles: Dictionary = {}
@@ -53,6 +60,7 @@ var _fog_overlay: CanvasItem = null
 var _fog_mask_image: Image = null
 var _fog_mask_texture: ImageTexture = null
 var _fog_local_team: int = GameState.Team.NONE
+var _fog_of_war_enabled: bool = true
 var _fog_current_target_image: Image = null
 var _fog_current_display_image: Image = null
 var _fog_current_source_signature: String = ""
@@ -77,14 +85,23 @@ const UNDERGROUND_RENDER_Z_INDEX: int = 2
 const FOG_OVERLAY_Z_INDEX: int = 8
 const MINING_OVERLAY_Z_INDEX: int = 10
 const GOLD_SEED_SALT: int = 7919
+const TERRAIN_TILE_VARIANT_COUNT: int = 4
+const TERRAIN_MATERIAL_COUNT: int = 10
+const TERRAIN_TEXTURE_TILE_SIZE: int = 16
 const TILE_DIRT: Vector2i = Vector2i(0, 0)
-const TILE_GRASS: Vector2i = Vector2i(1, 0)
-const TILE_GOLD: Vector2i = Vector2i(2, 0)
-const TILE_UNDERGROUND: Vector2i = Vector2i(3, 0)
+const TILE_GRASS: Vector2i = Vector2i(0, 1)
+const TILE_UNDERGROUND: Vector2i = Vector2i(0, 2)
+const TILE_DIRT_LIGHT: Vector2i = Vector2i(0, 3)
+const TILE_DIRT_DARK: Vector2i = Vector2i(0, 4)
+const TILE_CLAY: Vector2i = Vector2i(0, 5)
+const TILE_SILT: Vector2i = Vector2i(0, 6)
+const TILE_STONE_DIRT: Vector2i = Vector2i(0, 7)
+const TILE_GRASS_DARK: Vector2i = Vector2i(0, 8)
+const TILE_GOLD: Vector2i = Vector2i(0, 9)
 const MINING_DRAFT_ALPHA: float = 0.45
 const MINING_COMMITTED_ALPHA: float = 0.25
 const MINING_INVALID_COLOR: Color = Color(0.86, 0.18, 0.18, 0.75)
-const UNDERGROUND_COLOR: Color = Color(0.27, 0.16, 0.08, 1.0)
+const UNDERGROUND_LAYER_MODULATE: Color = Color(0.62, 0.62, 0.62, 1.0)
 const ORE_HEALTH_DEFAULT: int = 100
 const HARVEST_QUEUE_TEXT_COLOR: Color = Color(0, 0, 0, 1)
 const HARVEST_QUEUE_FONT_SIZE: int = 16
@@ -190,12 +207,16 @@ func is_ore_revealed_to_team(tile_pos: Vector2i, team: int) -> bool:
 func is_fog_revealed_to_team(tile_pos: Vector2i, team: int) -> bool:
 	if not is_tile_in_bounds(tile_pos):
 		return false
+	if not _fog_of_war_enabled:
+		return true
 	return _sample_fog_strength_image(
 		_fog_exploration_images_by_team.get(team) as Image,
 		tile_to_world_center(tile_pos)
 	) > 0.01
 
 func get_fog_alpha_at_world_position(world_pos: Vector2, team: int) -> float:
+	if not _fog_of_war_enabled:
+		return 0.0
 	if team == GameState.Team.NONE:
 		return 0.0
 	if not _is_underground_fog_candidate(world_to_tile(world_pos)):
@@ -208,6 +229,8 @@ func get_fog_alpha_at_world_position(world_pos: Vector2, team: int) -> float:
 	return _compose_fog_alpha(explored, current)
 
 func get_current_fog_visibility_at_world_position(world_pos: Vector2, team: int) -> float:
+	if not _fog_of_war_enabled:
+		return 1.0
 	if team == GameState.Team.NONE:
 		return 0.0
 	if not _is_underground_fog_candidate(world_to_tile(world_pos)):
@@ -302,6 +325,13 @@ func set_fog_local_team(team: int) -> void:
 	_fog_current_target_image = _create_fog_strength_image()
 	_fog_current_display_image = _create_fog_strength_image()
 	_rebuild_current_fog_vision_target()
+	_rebuild_fog_mask()
+
+func set_fog_of_war_enabled(enabled: bool) -> void:
+	if _fog_of_war_enabled == enabled:
+		_update_fog_overlay_visibility()
+		return
+	_fog_of_war_enabled = enabled
 	_rebuild_fog_mask()
 
 func set_current_fog_vision_sources_for_team(team: int, sources: Array) -> void:
@@ -891,6 +921,10 @@ func apply_test_terrain_layout(
 		_heightmap = surface_heights.duplicate()
 		_exact_surface_profile_active = true
 		_gold_tiles.clear()
+		_natural_air_tiles.clear()
+		_overhang_tiles.clear()
+		_natural_background_tiles.clear()
+		_overhang_background_tiles.clear()
 		_reset_terrain_runtime_state()
 		_populate_terrain_tiles()
 	for tile in carved_tiles:
@@ -1025,6 +1059,7 @@ func _build_terrain() -> void:
 	_resolved_terrain_seed = _resolve_terrain_seed()
 	_exact_surface_profile_active = false
 	_heightmap = _generate_heightmap(_resolved_terrain_seed)
+	_generate_natural_terrain_features(_resolved_terrain_seed)
 	_gold_tiles = _generate_gold_tiles(_resolved_terrain_seed)
 	_reset_terrain_runtime_state()
 	_populate_terrain_tiles()
@@ -1057,38 +1092,72 @@ func _populate_terrain_tiles() -> void:
 	for x in range(grid_width):
 		var surface_y: int = _get_surface_height(x)
 		for y in range(surface_y, grid_height):
+			var tile := Vector2i(x, y)
+			if _natural_air_tiles.has(tile):
+				_natural_background_tiles[tile] = true
+				continue
 			var atlas_coords := TILE_DIRT
 			if y == surface_y:
-				atlas_coords = TILE_GRASS
-			var tile := Vector2i(x, y)
+				atlas_coords = _get_tile_variant(TILE_GRASS, tile, 3)
+			else:
+				atlas_coords = _get_dirt_atlas_coords(tile, surface_y)
 			tile_map.set_cell(TERRAIN_LAYER, tile, 0, atlas_coords)
 			_tile_health[tile] = TILE_HEALTH_DEFAULT
+	for raw_tile in _overhang_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not is_tile_in_bounds(tile):
+			continue
+		tile_map.set_cell(TERRAIN_LAYER, tile, 0, _get_overhang_atlas_coords(tile))
+		_tile_health[tile] = TILE_HEALTH_DEFAULT
+	for raw_tile in _natural_background_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not is_tile_in_bounds(tile) or has_ground_at_tile(tile):
+			continue
+		tile_map.set_cell(
+			UNDERGROUND_LAYER,
+			tile,
+			0,
+			_get_tile_variant(TILE_UNDERGROUND, tile, 5)
+		)
+	for raw_tile in _overhang_background_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if not is_tile_in_bounds(tile) or has_ground_at_tile(tile):
+			continue
+		tile_map.set_cell(
+			UNDERGROUND_LAYER,
+			tile,
+			0,
+			_get_tile_variant(TILE_DIRT_DARK, tile, 17)
+		)
 	for raw_tile in _gold_tiles.keys():
 		var tile: Vector2i = raw_tile
-		tile_map.set_cell(RESOURCE_LAYER, tile, 0, TILE_GOLD)
+		tile_map.set_cell(RESOURCE_LAYER, tile, 0, _get_tile_variant(TILE_GOLD, tile, 11))
 		_ore_health[tile] = ORE_HEALTH_DEFAULT
 
-func _generate_heightmap(terrain_seed_value: int) -> Array[int]:
+func _generate_heightmap(_terrain_seed_value: int) -> Array[int]:
 	var heights: Array[int] = []
 	heights.resize(grid_width)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = terrain_seed_value
 	var base_height: int = int(clamp(base_surface_height, min_surface_height, max_surface_height))
 	var flat_width: int = _get_flat_width()
+	var height_range: int = max(0, max_surface_height - min_surface_height)
+	var amplitude: float = max(1.0, float(height_range) * 0.85)
+	var step_limit: int = max(0, max_step)
 	for x in range(grid_width):
 		if _is_in_flat_pad(x, flat_width):
 			heights[x] = base_height
 			continue
-		var prev: int = heights[x - 1] if x > 0 else base_height
-		var delta: int = rng.randi_range(-max_step, max_step)
-		if rng.randf() > roughness:
-			delta = 0
-		var next_height: int = int(clamp(prev + delta, min_surface_height, max_surface_height))
-		heights[x] = next_height
+		var broad_shape: float = _smooth_noise_1d(x, 401, 22)
+		var local_shape: float = _smooth_noise_1d(x, 409, 7) * clampf(roughness, 0.0, 1.0)
+		var target: int = int(round(base_height + (broad_shape * 0.85 + local_shape * 0.35) * amplitude))
+		target = int(clamp(target, min_surface_height, max_surface_height))
+		if x > 0:
+			target = int(clamp(target, heights[x - 1] - step_limit, heights[x - 1] + step_limit))
+		heights[x] = target
 	var passes: int = int(max(0, smooth_passes))
 	for pass_index in range(passes):
 		heights = _smooth_heights(heights)
 	_apply_flat_pads(heights, base_height, flat_width)
+	_blend_flat_pad_edges(heights, base_height, flat_width)
 	return heights
 
 func _smooth_heights(source: Array[int]) -> Array[int]:
@@ -1107,6 +1176,118 @@ func _smooth_heights(source: Array[int]) -> Array[int]:
 		var avg: int = int(round((left + center + right) / 3.0))
 		smoothed[x] = int(clamp(avg, min_surface_height, max_surface_height))
 	return smoothed
+
+func _generate_natural_terrain_features(terrain_seed_value: int) -> void:
+	_natural_air_tiles.clear()
+	_overhang_tiles.clear()
+	_natural_background_tiles.clear()
+	_overhang_background_tiles.clear()
+	if grid_width < 20 or grid_height < 14:
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = terrain_seed_value + 15485863
+	var flat_width: int = _get_flat_width()
+	var min_x: int = flat_width + 2
+	var max_x: int = grid_width - flat_width - 3
+	if min_x >= max_x:
+		return
+	_generate_cave_pockets(rng, min_x, max_x)
+	_generate_overhangs(rng, min_x, max_x)
+
+func _generate_cave_pockets(rng: RandomNumberGenerator, min_x: int, max_x: int) -> void:
+	var usable_depth: int = max(1, grid_height - max_surface_height)
+	var depth_scale: float = max(1.0, float(usable_depth) / 24.0)
+	var cave_count: int = int(ceil(float(grid_width) / 42.0 * depth_scale * cave_density))
+	var max_cave_count: int = max(
+		1,
+		floori(float(grid_width) / 20.0) + floori(float(usable_depth) / 24.0)
+	)
+	cave_count = int(clamp(cave_count, 0, max_cave_count))
+	for cave_index in range(cave_count):
+		var direction: int = -1 if rng.randf() < 0.5 else 1
+		var center := Vector2i(rng.randi_range(min_x, max_x), 0)
+		var surface_y: int = _get_surface_height(center.x)
+		var min_y: int = surface_y + 6
+		var max_y: int = grid_height - 3
+		if min_y > max_y:
+			continue
+		var depth_progress: float = (
+			float(cave_index) + rng.randf_range(0.2, 0.8)
+		) / float(max(1, cave_count))
+		center.y = int(round(lerp(float(min_y), float(max_y), depth_progress)))
+		var segment_count: int = rng.randi_range(4, 7) + floori(float(grid_height) / 36.0)
+		for segment in range(segment_count):
+			var radius_x: int = rng.randi_range(2, 4)
+			var radius_y: int = rng.randi_range(1, 2)
+			if segment > 0 and segment < segment_count - 1 and rng.randf() < 0.3:
+				radius_y += 1
+			_carve_cave_chamber(center, radius_x, radius_y, min_x, max_x)
+			center.x += direction * rng.randi_range(2, 4)
+			if center.x <= min_x or center.x >= max_x:
+				direction *= -1
+				center.x = int(clamp(center.x, min_x, max_x))
+			var next_min_y: int = _get_surface_height(center.x) + 6
+			center.y = int(clamp(center.y + rng.randi_range(-1, 1), next_min_y, grid_height - 3))
+
+func _carve_cave_chamber(
+	center: Vector2i,
+	radius_x: int,
+	radius_y: int,
+	min_x: int,
+	max_x: int
+) -> void:
+	for x in range(center.x - radius_x, center.x + radius_x + 1):
+		if x < min_x or x > max_x:
+			continue
+		var column_surface_y: int = _get_surface_height(x)
+		for y in range(center.y - radius_y, center.y + radius_y + 1):
+			if y < column_surface_y + 5 or y >= grid_height - 1:
+				continue
+			var nx: float = float(x - center.x) / float(max(1, radius_x))
+			var ny: float = float(y - center.y) / float(max(1, radius_y))
+			var edge_noise: float = float(_hash_tile(Vector2i(x, y), 31) % 100) / 100.0
+			if nx * nx + ny * ny > 1.0 + edge_noise * 0.22:
+				continue
+			var tile := Vector2i(x, y)
+			_natural_air_tiles[tile] = true
+			_natural_background_tiles[tile] = true
+
+func _generate_overhangs(rng: RandomNumberGenerator, min_x: int, max_x: int) -> void:
+	var overhang_count: int = int(round(float(grid_width) / 42.0 * overhang_density))
+	overhang_count = int(clamp(overhang_count, 0, 4))
+	for _i in range(overhang_count):
+		var width: int = rng.randi_range(8, 13)
+		var start_x: int = rng.randi_range(min_x, max(min_x, max_x - width + 1))
+		var end_x: int = min(max_x, start_x + width - 1)
+		var center_x: int = int(round((start_x + end_x) * 0.5))
+		var highest_surface_y: int = grid_height
+		for x in range(start_x, end_x + 1):
+			highest_surface_y = min(highest_surface_y, _get_surface_height(x))
+		var bottom_y: int = highest_surface_y - rng.randi_range(3, 4)
+		if bottom_y < 2:
+			continue
+		var max_height: int = rng.randi_range(2, 3)
+		var half_width: float = max(1.0, width * 0.5)
+		for x in range(start_x, end_x + 1):
+			var center_weight: float = 1.0 - abs(float(x - center_x)) / half_width
+			var column_height: int = 1 + int(round(center_weight * float(max_height - 1)))
+			if _hash_tile(Vector2i(x, bottom_y), 43) % 5 == 0:
+				column_height = max(1, column_height - 1)
+			for y in range(bottom_y - column_height + 1, bottom_y + 1):
+				if y < _get_surface_height(x) - 1:
+					_overhang_tiles[Vector2i(x, y)] = true
+		var deepest_surface_y: int = highest_surface_y
+		for x in range(start_x, end_x + 1):
+			deepest_surface_y = max(deepest_surface_y, _get_surface_height(x))
+		for y in range(bottom_y + 1, deepest_surface_y):
+			var progress: float = float(y - bottom_y) / float(max(1, deepest_surface_y - bottom_y))
+			var connector_half_width: int = max(1, int(round(half_width * (0.28 + progress * 0.72))))
+			for x in range(center_x - connector_half_width, center_x + connector_half_width + 1):
+				if x < start_x or x > end_x or y >= _get_surface_height(x):
+					continue
+				var tile := Vector2i(x, y)
+				if not _overhang_tiles.has(tile):
+					_overhang_background_tiles[tile] = true
 
 func _get_surface_height(x: int) -> int:
 	if _heightmap.is_empty():
@@ -1128,6 +1309,128 @@ func _apply_flat_pads(heights: Array[int], base_height: int, flat_width: int) ->
 		var right_index: int = grid_width - 1 - i
 		heights[left_index] = base_height
 		heights[right_index] = base_height
+
+func _blend_flat_pad_edges(heights: Array[int], base_height: int, flat_width: int) -> void:
+	var transition_width: int = min(
+		4,
+		max(0, floori(float(grid_width - flat_width * 2) / 2.0))
+	)
+	for offset in range(transition_width):
+		var blend: float = float(offset + 1) / float(transition_width + 1)
+		var left_index: int = flat_width + offset
+		var right_index: int = grid_width - flat_width - 1 - offset
+		heights[left_index] = int(round(lerp(float(base_height), float(heights[left_index]), blend)))
+		heights[right_index] = int(round(lerp(float(base_height), float(heights[right_index]), blend)))
+
+func _get_dirt_atlas_coords(tile: Vector2i, surface_y: int) -> Vector2i:
+	var depth: int = max(1, tile.y - surface_y)
+	if depth <= 2:
+		var topsoil := TILE_DIRT_LIGHT if depth == 2 and _smooth_noise_1d(tile.x, 457, 13) > 0.35 else TILE_DIRT
+		return _get_tile_variant(topsoil, tile, 7)
+	var strata_warp: int = int(round(
+		_smooth_noise_1d(tile.x, 461, 19) * 2.5
+		+ _smooth_noise_1d(tile.x, 463, 8)
+	))
+	var warped_depth: int = depth + strata_warp
+	var material_tile := TILE_DIRT_DARK
+	if warped_depth > 15:
+		material_tile = TILE_STONE_DIRT
+	elif warped_depth > 10:
+		material_tile = TILE_SILT
+	elif warped_depth > 5:
+		material_tile = TILE_CLAY
+	var lens_noise: float = _smooth_noise_2d(tile, 467, 11)
+	if warped_depth >= 7 and warped_depth <= 14 and lens_noise > 0.58:
+		material_tile = TILE_SILT
+	elif warped_depth >= 11 and lens_noise < -0.62:
+		material_tile = TILE_CLAY
+	if warped_depth >= 13 and _smooth_noise_2d(tile, 479, 14) > 0.55:
+		material_tile = TILE_STONE_DIRT
+	return _get_tile_variant(material_tile, tile, 7)
+
+func _get_overhang_atlas_coords(tile: Vector2i) -> Vector2i:
+	var material_tile := (
+		TILE_GRASS_DARK
+		if not _overhang_tiles.has(tile + Vector2i.UP)
+		else TILE_DIRT_DARK
+	)
+	return _get_tile_variant(material_tile, tile, 13)
+
+func _is_dirt_atlas_coords(atlas_coords: Vector2i) -> bool:
+	for material_tile in [
+		TILE_DIRT,
+		TILE_DIRT_LIGHT,
+		TILE_DIRT_DARK,
+		TILE_CLAY,
+		TILE_SILT,
+		TILE_STONE_DIRT,
+		TILE_GRASS_DARK,
+	]:
+		if _is_material_atlas_coords(atlas_coords, material_tile):
+			return true
+	return false
+
+func _is_material_atlas_coords(atlas_coords: Vector2i, material_tile: Vector2i) -> bool:
+	return (
+		atlas_coords.y == material_tile.y
+		and atlas_coords.x >= 0
+		and atlas_coords.x < TERRAIN_TILE_VARIANT_COUNT
+	)
+
+func _get_tile_variant(material_tile: Vector2i, tile: Vector2i, salt: int) -> Vector2i:
+	var value: int = (
+		tile.x * 374761393
+		+ tile.y * 668265263
+		+ salt * 1442695041
+		+ _resolved_terrain_seed * 69069
+	) & 0x7fffffff
+	value = ((value ^ (value >> 13)) * 1274126177) & 0x7fffffff
+	value = value ^ (value >> 16)
+	return Vector2i(value % TERRAIN_TILE_VARIANT_COUNT, material_tile.y)
+
+func _smooth_noise_1d(x: int, salt: int, cell_size: int) -> float:
+	var safe_cell_size: int = max(1, cell_size)
+	var left_cell: int = int(floor(float(x) / float(safe_cell_size)))
+	var local_t: float = float(x - left_cell * safe_cell_size) / float(safe_cell_size)
+	var smooth_t: float = local_t * local_t * (3.0 - 2.0 * local_t)
+	return lerpf(
+		_noise_value(Vector2i(left_cell, 0), salt),
+		_noise_value(Vector2i(left_cell + 1, 0), salt),
+		smooth_t
+	)
+
+func _smooth_noise_2d(tile: Vector2i, salt: int, cell_size: int) -> float:
+	var safe_cell_size: int = max(1, cell_size)
+	var cell_x: int = int(floor(float(tile.x) / float(safe_cell_size)))
+	var cell_y: int = int(floor(float(tile.y) / float(safe_cell_size)))
+	var local_x: float = float(tile.x - cell_x * safe_cell_size) / float(safe_cell_size)
+	var local_y: float = float(tile.y - cell_y * safe_cell_size) / float(safe_cell_size)
+	var smooth_x: float = local_x * local_x * (3.0 - 2.0 * local_x)
+	var smooth_y: float = local_y * local_y * (3.0 - 2.0 * local_y)
+	var top: float = lerpf(
+		_noise_value(Vector2i(cell_x, cell_y), salt),
+		_noise_value(Vector2i(cell_x + 1, cell_y), salt),
+		smooth_x
+	)
+	var bottom: float = lerpf(
+		_noise_value(Vector2i(cell_x, cell_y + 1), salt),
+		_noise_value(Vector2i(cell_x + 1, cell_y + 1), salt),
+		smooth_x
+	)
+	return lerpf(top, bottom, smooth_y)
+
+func _noise_value(cell: Vector2i, salt: int) -> float:
+	return float(_hash_tile(cell, salt) % 2001) / 1000.0 - 1.0
+
+func _hash_tile(tile: Vector2i, salt: int) -> int:
+	var value: int = (
+		tile.x * 928371
+		+ tile.y * 364479
+		+ salt * 15731
+		+ _resolved_terrain_seed
+	)
+	value = int(abs((value * 1103515245 + 12345) % 2147483647))
+	return value
 
 func _resolve_terrain_seed() -> int:
 	if terrain_seed != 0:
@@ -1165,7 +1468,10 @@ func _get_eligible_gold_tiles() -> Array[Vector2i]:
 	for x in range(grid_width):
 		var start_y: int = _get_surface_height(x) + min_depth
 		for y in range(start_y, grid_height):
-			eligible_tiles.append(Vector2i(x, y))
+			var tile := Vector2i(x, y)
+			if _natural_air_tiles.has(tile):
+				continue
+			eligible_tiles.append(tile)
 	return eligible_tiles
 
 func _shuffle_tiles(tiles: Array[Vector2i], rng: RandomNumberGenerator) -> void:
@@ -1207,6 +1513,7 @@ func _ensure_tilemap_layers() -> void:
 	tile_map.set_layer_z_index(TERRAIN_LAYER, TERRAIN_RENDER_Z_INDEX)
 	tile_map.set_layer_z_index(RESOURCE_LAYER, RESOURCE_RENDER_Z_INDEX)
 	tile_map.set_layer_z_index(UNDERGROUND_LAYER, UNDERGROUND_RENDER_Z_INDEX)
+	tile_map.set_layer_modulate(UNDERGROUND_LAYER, UNDERGROUND_LAYER_MODULATE)
 	tile_map.set_layer_z_index(MINING_DRAFT_LAYER, MINING_OVERLAY_Z_INDEX)
 	tile_map.set_layer_z_index(MINING_INVALID_LAYER, MINING_OVERLAY_Z_INDEX + 1)
 	for i in range(MAX_MINER_OVERLAY_LAYERS):
@@ -1222,24 +1529,17 @@ func _ensure_tilemap_layers() -> void:
 func _ensure_tileset() -> void:
 	if tile_map.tile_set != null:
 		return
-	var image := Image.create(tile_size * 4, tile_size, false, Image.FORMAT_RGBA8)
-	image.fill(Color(0, 0, 0, 0))
-	_fill_rect(image, Rect2i(0, 0, tile_size, tile_size), Color(0.45, 0.32, 0.18, 1))
-	_fill_rect(image, Rect2i(tile_size, 0, tile_size, tile_size), Color(0.3, 0.6, 0.25, 1))
-	_fill_rect(image, Rect2i(tile_size * 2, 0, tile_size, tile_size), Color(0.9, 0.76, 0.18, 1))
-	_fill_rect(image, Rect2i(tile_size * 3, 0, tile_size, tile_size), UNDERGROUND_COLOR)
-	var texture := ImageTexture.create_from_image(image)
 	var tileset := TileSet.new()
 	tileset.tile_size = Vector2i(tile_size, tile_size)
 	var source := TileSetAtlasSource.new()
-	source.texture = texture
-	source.texture_region_size = Vector2i(tile_size, tile_size)
+	source.texture = TERRAIN_TILESET_TEXTURE
+	source.texture_region_size = Vector2i(TERRAIN_TEXTURE_TILE_SIZE, TERRAIN_TEXTURE_TILE_SIZE)
 	var _source_id := tileset.add_source(source)
-	source.create_tile(TILE_DIRT)
-	source.create_tile(TILE_GRASS)
-	source.create_tile(TILE_GOLD)
-	source.create_tile(TILE_UNDERGROUND)
+	for material_index in range(TERRAIN_MATERIAL_COUNT):
+		for variant_index in range(TERRAIN_TILE_VARIANT_COUNT):
+			source.create_tile(Vector2i(variant_index, material_index))
 	tile_map.tile_set = tileset
+	tile_map.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
 func _apply_world_settings() -> void:
 	grid_width = GameState.map_width
@@ -1303,7 +1603,7 @@ func _ensure_fog_overlay() -> void:
 
 func _update_fog_overlay_visibility() -> void:
 	_ensure_fog_overlay()
-	var should_show: bool = _fog_local_team != GameState.Team.NONE
+	var should_show: bool = _fog_of_war_enabled and _fog_local_team != GameState.Team.NONE
 	if _fog_overlay.has_method("set_fog_texture"):
 		_fog_overlay.set_fog_texture(_fog_mask_texture, get_world_pixel_rect(), should_show)
 
@@ -1498,9 +1798,11 @@ func _get_connected_air_lookup_for_source(source: Dictionary) -> Dictionary:
 	return connected
 
 func _update_fog_vision_transition(delta: float) -> void:
-	if _fog_local_team == GameState.Team.NONE \
+	if not _fog_of_war_enabled \
+			or _fog_local_team == GameState.Team.NONE \
 			or _fog_current_target_image == null \
 			or _fog_current_display_image == null:
+		_update_fog_overlay_visibility()
 		return
 	if _fog_mask_image == null \
 			or _fog_mask_image.get_size() != _fog_current_display_image.get_size():
@@ -1569,7 +1871,7 @@ func _rebuild_fog_mask() -> void:
 	var image_height: int = maxi(1, grid_height * FOG_MASK_PIXELS_PER_TILE)
 	_fog_mask_image = Image.create(image_width, image_height, false, Image.FORMAT_RGBA8)
 	_fog_mask_image.fill(Color(0, 0, 0, 0))
-	if _fog_local_team != GameState.Team.NONE:
+	if _fog_of_war_enabled and _fog_local_team != GameState.Team.NONE:
 		var exploration := _get_or_create_fog_exploration_image(_fog_local_team)
 		if _fog_current_display_image == null:
 			_fog_current_display_image = _create_fog_strength_image()

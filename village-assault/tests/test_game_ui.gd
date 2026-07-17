@@ -44,6 +44,21 @@ func _pause_message(scene: Node) -> String:
 func _pause_button_visible(scene: Node, button_name: String) -> bool:
 	return scene.get_node("PauseMenu/Background/CenterContainer/VBoxContainer/ButtonContainer/%s" % button_name).visible
 
+func test_game_uses_a_fixed_blue_sky_behind_the_world() -> void:
+	_reset_runtime_state()
+	var game := GAME_SCENE.instantiate()
+	_mount_node(game)
+
+	var sky_layer := game.get_node("SkyLayer") as CanvasLayer
+	var sky := game.get_node("SkyLayer/Sky") as ColorRect
+	assert_int(sky_layer.layer).is_less(0)
+	assert_float(sky.color.b).is_greater(sky.color.r)
+	assert_float(sky.color.b).is_greater(sky.color.g)
+	assert_int(sky.mouse_filter).is_equal(Control.MOUSE_FILTER_IGNORE)
+
+	_clear_node(game)
+	_reset_runtime_state()
+
 func test_host_disconnected_branch_shows_client_disconnected_message() -> void:
 	var game := _start_host_game()
 

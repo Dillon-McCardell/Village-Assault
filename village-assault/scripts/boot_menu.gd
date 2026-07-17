@@ -14,6 +14,7 @@ static var return_status_message: String = ""
 @onready var join_address_input: LineEdit = $JoinPanel/JoinVBox/JoinAddressInput
 @onready var map_size_slider: HSlider = $HostPanel/HostVBox/MapSizeSlider
 @onready var map_size_value: Label = $HostPanel/HostVBox/MapSizeValue
+@onready var fog_of_war_toggle: CheckBox = $HostPanel/HostVBox/FogOfWarToggle
 
 const DEFAULT_ADDRESS: String = "127.0.0.1"
 const LOBBY_SCENE: String = "res://scenes/lobby.tscn"
@@ -108,12 +109,24 @@ func _generate_seed() -> int:
 func start_host_for_test(port: int) -> void:
 	var map_size := _get_map_size_from_slider()
 	var map_seed_val: int = _generate_seed()
-	start_custom_test_host(port, map_size.x, map_size.y, map_seed_val)
+	start_custom_test_host(
+		port,
+		map_size.x,
+		map_size.y,
+		map_seed_val,
+		fog_of_war_toggle.button_pressed
+	)
 
-func start_custom_test_host(port: int, map_width: int, map_height: int, map_seed_val: int) -> void:
+func start_custom_test_host(
+	port: int,
+	map_width: int,
+	map_height: int,
+	map_seed_val: int,
+	fog_enabled: bool = GameState.DEFAULT_FOG_OF_WAR_ENABLED
+) -> void:
 	GameState.reset_all()
 	NetworkManager.host(port)
-	GameState.set_world_settings(map_width, map_height, map_seed_val)
+	GameState.set_world_settings(map_width, map_height, map_seed_val, fog_enabled)
 	_set_status("Hosting...")
 	get_tree().change_scene_to_file(LOBBY_SCENE)
 

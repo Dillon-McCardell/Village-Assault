@@ -178,10 +178,12 @@ func _ready() -> void:
 	_connect_picker_cancel_buttons()
 	GameState.local_state_updated.connect(_on_local_state_updated)
 	GameState.world_settings_updated.connect(_on_world_settings_updated)
+	GameState.fog_settings_updated.connect(_on_fog_settings_updated)
 	if camera.has_signal("zoom_changed"):
 		camera.zoom_changed.connect(_on_camera_zoom_changed)
 	_update_status()
 	_update_camera_limits()
+	territory_manager.set_fog_of_war_enabled(GameState.fog_of_war_enabled)
 	territory_manager.set_fog_local_team(GameState.local_team)
 	_refresh_mining_selection_visuals()
 	DebugConsole.set_label(debug_overlay)
@@ -235,10 +237,17 @@ func _on_local_state_updated(_team: int, _money: int) -> void:
 
 func _on_world_settings_updated(_map_width: int, _map_height: int, _map_seed: int) -> void:
 	_update_camera_limits()
+	territory_manager.set_fog_of_war_enabled(GameState.fog_of_war_enabled)
 	territory_manager.set_fog_local_team(GameState.local_team)
 	if GameState.local_team != GameState.Team.NONE and not _camera_anchor_initialized:
 		_update_camera_anchor()
 	_refresh_mining_selection_visuals()
+
+func _on_fog_settings_updated(fog_enabled: bool) -> void:
+	territory_manager.set_fog_of_war_enabled(fog_enabled)
+	_fog_vision_refresh_remaining = 0.0
+	_refresh_local_fog_vision(FOG_VISION_REFRESH_INTERVAL_SEC)
+	_refresh_troop_fog_visibility(TROOP_VISIBILITY_FADE_DURATION_SEC)
 
 func _on_camera_zoom_changed() -> void:
 	_update_camera_limits()
@@ -1012,7 +1021,7 @@ func _has_any_committed_mining_assignments() -> bool:
 	return false
 
 func _process_troop_fog_reveal(delta: float) -> void:
-	if not _is_multiplayer_server() or territory_manager == null:
+	if not GameState.fog_of_war_enabled or not _is_multiplayer_server() or territory_manager == null:
 		return
 	_fog_reveal_scan_remaining -= delta
 	if _fog_reveal_scan_remaining > 0.0:
@@ -1037,6 +1046,9 @@ func _process_troop_fog_reveal(delta: float) -> void:
 
 func _refresh_local_fog_vision(delta: float) -> void:
 	if territory_manager == null or units_root == null:
+		return
+	if not GameState.fog_of_war_enabled:
+		territory_manager.set_current_fog_vision_sources_for_team(GameState.local_team, [])
 		return
 	_fog_vision_refresh_remaining -= delta
 	if _fog_vision_refresh_remaining > 0.0:
@@ -1092,7 +1104,7 @@ func _refresh_troop_fog_visibility(delta: float) -> void:
 			continue
 		var troop_team := int(child.get_team())
 		var target_alpha := 1.0
-		if local_team != GameState.Team.NONE and troop_team != local_team:
+		if GameState.fog_of_war_enabled and local_team != GameState.Team.NONE and troop_team != local_team:
 			var sample_position := (child as Node2D).position
 			var raw_height: Variant = child.get("unit_height")
 			var height := float(raw_height) if raw_height != null else 0.0
@@ -1325,6 +1337,7 @@ func get_test_snapshot() -> Dictionary:
 		"map_width": GameState.map_width,
 		"map_height": GameState.map_height,
 		"map_seed": GameState.map_seed,
+		"fog_of_war_enabled": GameState.fog_of_war_enabled,
 		"paused": get_tree().paused,
 		"disconnect_overlay_visible": _disconnect_overlay.is_overlay_visible(),
 		"disconnect_overlay_message": _disconnect_overlay.get_message_text(),

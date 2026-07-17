@@ -6,6 +6,32 @@ const TERRAIN_TEST_HARNESS: GDScript = preload("res://scripts/testing/terrain_te
 
 var _terrain_harness: RefCounted = TERRAIN_TEST_HARNESS.new()
 
+func _count_connected_tile_regions(tiles: Dictionary) -> int:
+	var remaining: Dictionary = tiles.duplicate()
+	var region_count: int = 0
+	var directions: Array[Vector2i] = [
+		Vector2i.LEFT,
+		Vector2i.RIGHT,
+		Vector2i.UP,
+		Vector2i.DOWN,
+	]
+	while not remaining.is_empty():
+		var start: Vector2i = remaining.keys()[0]
+		var frontier: Array[Vector2i] = [start]
+		var frontier_index: int = 0
+		remaining.erase(start)
+		region_count += 1
+		while frontier_index < frontier.size():
+			var current: Vector2i = frontier[frontier_index]
+			frontier_index += 1
+			for direction in directions:
+				var neighbor: Vector2i = current + direction
+				if not remaining.has(neighbor):
+					continue
+				remaining.erase(neighbor)
+				frontier.append(neighbor)
+	return region_count
+
 func _clear_and_fill_ground(manager: TerritoryManager, tiles: Array[Vector2i]) -> void:
 	manager.tile_map.clear()
 	manager._gold_tiles.clear()
@@ -125,6 +151,28 @@ func test_flat_base_pads_are_preserved_after_terrain_generation() -> void:
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
 
+func test_surface_uses_multiple_elevations_without_exceeding_step_limit() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(96, 40, 735019)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 0.0
+	manager.overhang_density = 0.0
+	_terrain_harness.mount_manager(manager)
+	var elevations: Dictionary = {}
+	var flat_width: int = manager._get_flat_width()
+
+	for x in range(flat_width, manager.grid_width - flat_width):
+		elevations[manager._heightmap[x]] = true
+		if x > flat_width:
+			assert_int(abs(manager._heightmap[x] - manager._heightmap[x - 1])).is_less_equal(
+				manager.max_step
+			)
+
+	assert_int(elevations.size()).is_greater_equal(3)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
 func test_base_anchors_stay_in_their_territories_after_world_size_changes() -> void:
 	_terrain_harness.reset_runtime_state()
 	GameState.set_world_settings(64, 20, 6666)
@@ -197,8 +245,10 @@ func test_gold_tiles_render_on_resource_layer_without_replacing_surface_grass() 
 	for x in range(manager.grid_width):
 		var surface_tile := Vector2i(x, manager._get_surface_height(x))
 		assert_bool(
-			manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, surface_tile)
-			== manager.TILE_GRASS
+			manager._is_material_atlas_coords(
+				manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, surface_tile),
+				manager.TILE_GRASS
+			)
 		).is_true()
 		assert_int(
 			manager.tile_map.get_cell_source_id(manager.RESOURCE_LAYER, surface_tile)
@@ -206,13 +256,196 @@ func test_gold_tiles_render_on_resource_layer_without_replacing_surface_grass() 
 	for raw_tile in manager.get_gold_tiles().keys():
 		var gold_tile: Vector2i = raw_tile
 		assert_bool(
-			manager.tile_map.get_cell_atlas_coords(manager.RESOURCE_LAYER, gold_tile)
-			== manager.TILE_GOLD
+			manager._is_material_atlas_coords(
+				manager.tile_map.get_cell_atlas_coords(manager.RESOURCE_LAYER, gold_tile),
+				manager.TILE_GOLD
+			)
 		).is_true()
 		assert_bool(
-			manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, gold_tile)
-			== manager.TILE_DIRT
+			manager._is_dirt_atlas_coords(
+				manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, gold_tile)
+			)
 		).is_true()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_terrain_generation_uses_visual_dirt_variants_below_surface() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 24, 99921)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 0.0
+	manager.overhang_density = 0.0
+	_terrain_harness.mount_manager(manager)
+	var dirt_materials: Dictionary = {}
+
+	for x in range(manager.grid_width):
+		var surface_y: int = manager._get_surface_height(x)
+		for y in range(surface_y + 1, manager.grid_height):
+			var atlas_coords := manager.tile_map.get_cell_atlas_coords(
+				manager.TERRAIN_LAYER,
+				Vector2i(x, y)
+			)
+			if manager._is_dirt_atlas_coords(atlas_coords):
+				dirt_materials[atlas_coords.y] = true
+
+	assert_int(dirt_materials.size()).is_greater(3)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_terrain_tileset_loads_editable_png_with_four_variants_per_material() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 24, 999211)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var source := manager.tile_map.tile_set.get_source(0) as TileSetAtlasSource
+
+	assert_object(source).is_not_null()
+	assert_str(source.texture.resource_path).is_equal("res://assets/terrain/terrain_tiles.png")
+	assert_int(source.get_tiles_count()).is_equal(
+		manager.TERRAIN_MATERIAL_COUNT * manager.TERRAIN_TILE_VARIANT_COUNT
+	)
+	var atlas_image: Image = source.texture.get_image()
+	var transparent_gold_pixels: int = 0
+	var visible_gold_pixels: int = 0
+	for x in range(atlas_image.get_width()):
+		for y in range(manager.TILE_GOLD.y * manager.TERRAIN_TEXTURE_TILE_SIZE, atlas_image.get_height()):
+			if atlas_image.get_pixel(x, y).a < 0.01:
+				transparent_gold_pixels += 1
+			else:
+				visible_gold_pixels += 1
+	assert_int(transparent_gold_pixels).is_greater(0)
+	assert_int(visible_gold_pixels).is_greater(0)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_visual_tile_variants_do_not_repeat_in_diagonal_bands() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(128, 60, 735019)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	var diagonal_matches: int = 0
+	var comparisons: int = 0
+	var variants: Dictionary = {}
+
+	for y in range(1, manager.grid_height):
+		for x in range(manager.grid_width - 1):
+			var current_variant := manager._get_tile_variant(
+				manager.TILE_STONE_DIRT,
+				Vector2i(x, y),
+				7
+			).x
+			var diagonal_variant := manager._get_tile_variant(
+				manager.TILE_STONE_DIRT,
+				Vector2i(x + 1, y - 1),
+				7
+			).x
+			variants[current_variant] = true
+			comparisons += 1
+			if current_variant == diagonal_variant:
+				diagonal_matches += 1
+
+	assert_int(variants.size()).is_equal(manager.TERRAIN_TILE_VARIANT_COUNT)
+	assert_float(float(diagonal_matches) / float(comparisons)).is_less(0.55)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_sedimentary_materials_form_broad_regions_instead_of_tile_noise() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(96, 40, 999212)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 0.0
+	manager.overhang_density = 0.0
+	_terrain_harness.mount_manager(manager)
+	var comparisons: int = 0
+	var material_transitions: int = 0
+
+	for x in range(1, manager.grid_width):
+		for y in range(max(manager._get_surface_height(x), manager._get_surface_height(x - 1)) + 3, manager.grid_height):
+			var current := manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, Vector2i(x, y))
+			var left := manager.tile_map.get_cell_atlas_coords(manager.TERRAIN_LAYER, Vector2i(x - 1, y))
+			if current == Vector2i(-1, -1) or left == Vector2i(-1, -1):
+				continue
+			comparisons += 1
+			if current.y != left.y:
+				material_transitions += 1
+
+	assert_int(comparisons).is_greater(0)
+	assert_float(float(material_transitions) / float(comparisons)).is_less(0.2)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_natural_caves_are_background_air_without_collision_ground() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 24, 99922)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 1.0
+	manager.overhang_density = 0.0
+	_terrain_harness.mount_manager(manager)
+
+	assert_int(manager._natural_air_tiles.size()).is_greater(0)
+	var min_cave_x: int = manager.grid_width
+	var max_cave_x: int = -1
+	for raw_tile in manager._natural_air_tiles.keys():
+		var tile: Vector2i = raw_tile
+		min_cave_x = min(min_cave_x, tile.x)
+		max_cave_x = max(max_cave_x, tile.x)
+		assert_bool(manager.has_ground_at_tile(tile)).is_false()
+		assert_bool(manager.is_underground_tile(tile)).is_true()
+		assert_bool(manager.is_walkable_air_tile(tile)).is_true()
+	assert_int(manager._natural_air_tiles.size()).is_greater(30)
+	assert_int(max_cave_x - min_cave_x).is_greater(8)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_tall_maps_distribute_caves_across_multiple_regions() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(128, 60, 735019)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 0.6
+	manager.overhang_density = 0.0
+	_terrain_harness.mount_manager(manager)
+
+	assert_int(_count_connected_tile_regions(manager._natural_air_tiles)).is_greater_equal(3)
+	assert_int(manager._natural_air_tiles.size()).is_greater(120)
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_overhangs_create_solid_islands_and_noncollision_background_connectors() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(64, 24, 99923)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	manager.cave_density = 0.0
+	manager.overhang_density = 1.0
+	_terrain_harness.mount_manager(manager)
+	var background_connector_count: int = 0
+
+	assert_int(manager._overhang_tiles.size()).is_greater(0)
+	for raw_tile in manager._overhang_tiles.keys():
+		var tile: Vector2i = raw_tile
+		assert_bool(manager.has_ground_at_tile(tile)).is_true()
+		assert_bool(tile.y < manager._get_surface_height(tile.x)).is_true()
+	for raw_tile in manager._overhang_background_tiles.keys():
+		var tile: Vector2i = raw_tile
+		if tile.y >= manager._get_surface_height(tile.x):
+			continue
+		if manager.has_ground_at_tile(tile):
+			continue
+		background_connector_count += 1
+		assert_bool(manager.is_underground_tile(tile)).is_true()
+		assert_bool(manager.is_walkable_air_tile(tile)).is_true()
+		assert_bool(manager._is_material_atlas_coords(
+			manager.tile_map.get_cell_atlas_coords(manager.UNDERGROUND_LAYER, tile),
+			manager.TILE_DIRT_DARK
+		)).is_true()
+
+	assert_int(background_connector_count).is_greater(0)
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()
@@ -673,6 +906,32 @@ func test_fog_reveal_is_team_specific() -> void:
 	assert_array(revealed).is_equal([tile])
 	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_true()
 	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.RIGHT)).is_false()
+
+	_terrain_harness.clear_manager(manager)
+	_terrain_harness.reset_runtime_state()
+
+func test_disabling_fog_hides_overlay_and_treats_terrain_as_revealed() -> void:
+	_terrain_harness.reset_runtime_state()
+	GameState.set_world_settings(32, 20, 10017, false)
+	var manager: TerritoryManager = _terrain_harness.create_manager()
+	_terrain_harness.mount_manager(manager)
+	manager.set_fog_local_team(GameState.Team.LEFT)
+	manager.set_fog_of_war_enabled(false)
+	var tile := Vector2i(12, manager._get_surface_height(12) + 2)
+
+	assert_bool(manager.is_fog_revealed_to_team(tile, GameState.Team.LEFT)).is_true()
+	assert_float(manager.get_fog_alpha_at_world_position(
+		manager.tile_to_world_center(tile),
+		GameState.Team.LEFT
+	)).is_equal_approx(0.0, 0.001)
+	assert_float(manager.get_current_fog_visibility_at_world_position(
+		manager.tile_to_world_center(tile),
+		GameState.Team.LEFT
+	)).is_equal_approx(1.0, 0.001)
+	assert_float(manager._get_fog_mask_alpha_at_world(manager.tile_to_world_center(tile))).is_equal_approx(
+		0.0,
+		0.001
+	)
 
 	_terrain_harness.clear_manager(manager)
 	_terrain_harness.reset_runtime_state()

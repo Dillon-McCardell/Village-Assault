@@ -74,6 +74,10 @@ value = 0.0
 text = "Size: 64 x 20 (100%)"
 horizontal_alignment = 1
 
+[node name="FogOfWarToggle" type="CheckBox" parent="HostPanel/HostVBox"]
+button_pressed = true
+text = "Enable Fog of War"
+
 [node name="HostStartButton" type="Button" parent="HostPanel/HostVBox"]
 text = "Start Hosting"
 

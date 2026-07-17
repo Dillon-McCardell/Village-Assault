@@ -4,6 +4,7 @@ signal team_assigned(peer_id: int, team: int)
 signal money_updated(peer_id: int, money: int)
 signal local_state_updated(team: int, money: int)
 signal world_settings_updated(map_width: int, map_height: int, map_seed: int)
+signal fog_settings_updated(fog_of_war_enabled: bool)
 signal player_removed(peer_id: int)
 signal peer_disconnected_graceful(peer_id: int)
 signal peer_reconnected(peer_id: int)
@@ -25,12 +26,14 @@ var current_scene: String = "boot_menu"
 const DEFAULT_MAP_WIDTH: int = 64
 const DEFAULT_MAP_HEIGHT: int = 20
 const DEFAULT_MAP_SEED: int = 0
+const DEFAULT_FOG_OF_WAR_ENABLED: bool = true
 
 var local_team: int = Team.NONE
 var local_money: int = 0
 var map_width: int = DEFAULT_MAP_WIDTH
 var map_height: int = DEFAULT_MAP_HEIGHT
 var map_seed: int = DEFAULT_MAP_SEED
+var fog_of_war_enabled: bool = DEFAULT_FOG_OF_WAR_ENABLED
 
 var _peer_team: Dictionary = {}
 var _peer_money: Dictionary = {}
@@ -131,16 +134,23 @@ func _assign_team_to_peer(peer_id: int) -> void:
 	else:
 		_receive_player_state.rpc_id(peer_id, team, STARTING_MONEY)
 
-func set_world_settings(width: int, height: int, map_seed_val: int) -> void:
+func set_world_settings(
+	width: int,
+	height: int,
+	map_seed_val: int,
+	fog_enabled: bool = DEFAULT_FOG_OF_WAR_ENABLED
+) -> void:
 	map_width = width
 	map_height = height
 	map_seed = map_seed_val
+	fog_of_war_enabled = fog_enabled
 	world_settings_updated.emit(map_width, map_height, map_seed)
+	fog_settings_updated.emit(fog_of_war_enabled)
 	if multiplayer.multiplayer_peer != null and multiplayer.is_server():
 		_broadcast_world_settings()
 
 func set_world_size(width: int, height: int) -> void:
-	set_world_settings(width, height, map_seed)
+	set_world_settings(width, height, map_seed, fog_of_war_enabled)
 
 func _count_team(team: int) -> int:
 	var count := 0
@@ -220,7 +230,9 @@ func _reset_world_settings() -> void:
 	map_width = DEFAULT_MAP_WIDTH
 	map_height = DEFAULT_MAP_HEIGHT
 	map_seed = DEFAULT_MAP_SEED
+	fog_of_war_enabled = DEFAULT_FOG_OF_WAR_ENABLED
 	world_settings_updated.emit(map_width, map_height, map_seed)
+	fog_settings_updated.emit(fog_of_war_enabled)
 
 ## Clears all session data. Call when starting a brand new game session.
 func reset_all() -> void:
@@ -241,17 +253,30 @@ func _broadcast_world_settings() -> void:
 			_send_world_settings(peer_id)
 
 func _send_world_settings(peer_id: int) -> void:
-	_receive_world_settings.rpc_id(peer_id, map_width, map_height, map_seed)
+	_receive_world_settings.rpc_id(
+		peer_id,
+		map_width,
+		map_height,
+		map_seed,
+		fog_of_war_enabled
+	)
 
 func _send_world_settings_to_local() -> void:
-	_receive_world_settings(map_width, map_height, map_seed)
+	_receive_world_settings(map_width, map_height, map_seed, fog_of_war_enabled)
 
 @rpc("authority", "reliable")
-func _receive_world_settings(width: int, height: int, map_seed_val: int) -> void:
+func _receive_world_settings(
+	width: int,
+	height: int,
+	map_seed_val: int,
+	fog_enabled: bool = DEFAULT_FOG_OF_WAR_ENABLED
+) -> void:
 	map_width = width
 	map_height = height
 	map_seed = map_seed_val
+	fog_of_war_enabled = fog_enabled
 	world_settings_updated.emit(map_width, map_height, map_seed)
+	fog_settings_updated.emit(fog_of_war_enabled)
 
 func _generate_seed() -> int:
 	var rng := RandomNumberGenerator.new()

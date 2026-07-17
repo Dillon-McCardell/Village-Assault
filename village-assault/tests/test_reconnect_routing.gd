@@ -4,6 +4,7 @@ extends GdUnitTestSuite
 
 const GAME_SCENE: PackedScene = preload("res://scenes/game.tscn")
 const LOBBY_SCENE: PackedScene = preload("res://scenes/lobby.tscn")
+const BOOT_MENU_SCENE: PackedScene = preload("res://scenes/boot_menu.tscn")
 
 func _reset_runtime_state() -> void:
 	NetworkManager.stop_auto_reconnect()
@@ -27,7 +28,7 @@ func _await_scene_change() -> void:
 
 func test_try_restore_peer_preserves_local_state_and_world_settings() -> void:
 	_reset_runtime_state()
-	GameState.set_world_settings(96, 28, 424242)
+	GameState.set_world_settings(96, 28, 424242, false)
 	GameState._inactive_peers[17] = {
 		"team": GameState.Team.RIGHT,
 		"money": 275,
@@ -43,8 +44,31 @@ func test_try_restore_peer_preserves_local_state_and_world_settings() -> void:
 	assert_int(GameState.map_width).is_equal(96)
 	assert_int(GameState.map_height).is_equal(28)
 	assert_int(GameState.map_seed).is_equal(424242)
+	assert_bool(GameState.fog_of_war_enabled).is_false()
 	assert_bool(GameState._inactive_peers.is_empty()).is_true()
 
+	_reset_runtime_state()
+
+func test_boot_menu_host_uses_fog_checkbox_setting() -> void:
+	_reset_runtime_state()
+	var boot_menu := BOOT_MENU_SCENE.instantiate() as BootMenu
+	_mount_node(boot_menu)
+	await _await_scene_change()
+	boot_menu.fog_of_war_toggle.button_pressed = false
+
+	boot_menu.start_custom_test_host(
+		NetworkManager.DEFAULT_PORT + 500,
+		64,
+		20,
+		123456,
+		boot_menu.fog_of_war_toggle.button_pressed
+	)
+	await _await_scene_change()
+
+	assert_bool(GameState.fog_of_war_enabled).is_false()
+	assert_str(get_tree().current_scene.scene_file_path).is_equal("res://scenes/lobby.tscn")
+
+	_clear_current_scene()
 	_reset_runtime_state()
 
 func test_receive_scene_redirect_loads_game_scene() -> void:
